@@ -41,30 +41,31 @@ func _log(msg: String) -> void:
 
 func create_hud(parent: CanvasLayer) -> void:
 	hud_panel = PanelContainer.new()
-	hud_panel.anchor_left = 1.0
-	hud_panel.anchor_top = 0.0
-	hud_panel.anchor_right = 1.0
-	hud_panel.anchor_bottom = 0.0
-	hud_panel.offset_left = -220
-	hud_panel.offset_top = 20
-	hud_panel.offset_right = -20
-	hud_panel.offset_bottom = 100
-	hud_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	hud_panel.anchor_left = 0.5
+	hud_panel.anchor_top = 1.0
+	hud_panel.anchor_right = 0.5
+	hud_panel.anchor_bottom = 1.0
+	hud_panel.offset_left = -130
+	hud_panel.offset_top = -90
+	hud_panel.offset_right = 130
+	hud_panel.offset_bottom = -55
+	hud_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	hud_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.1, 0.08, 0.02, 0.7)
-	style.border_color = Color(1, 0.85, 0.2, 0.5)
-	style.border_width_left = 2
-	style.border_width_right = 2
-	style.border_width_top = 2
-	style.border_width_bottom = 2
-	style.corner_radius_top_left = 4
-	style.corner_radius_top_right = 4
-	style.corner_radius_bottom_left = 4
-	style.corner_radius_bottom_right = 4
-	style.content_margin_left = 10
-	style.content_margin_right = 10
-	style.content_margin_top = 4
-	style.content_margin_bottom = 4
+	style.bg_color = Color(0.06, 0.06, 0.12, 0.8)
+	style.border_color = Color(1, 0.85, 0.2, 0.4)
+	style.border_width_left = 1
+	style.border_width_right = 1
+	style.border_width_top = 1
+	style.border_width_bottom = 1
+	style.corner_radius_top_left = 6
+	style.corner_radius_top_right = 6
+	style.corner_radius_bottom_left = 6
+	style.corner_radius_bottom_right = 6
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 5
+	style.content_margin_bottom = 5
 	hud_panel.add_theme_stylebox_override("panel", style)
 	hud_panel.visible = false
 
@@ -72,6 +73,7 @@ func create_hud(parent: CanvasLayer) -> void:
 	hud_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hud_label.bbcode_enabled = true
 	hud_label.fit_content = true
+	hud_label.add_theme_font_size_override("normal_font_size", 17)
 	hud_panel.add_child(hud_label)
 	parent.add_child(hud_panel)
 
@@ -87,9 +89,25 @@ func update_hud() -> void:
 		if ptype != Powerup.Type.NONE:
 			var color := Powerup.get_color(ptype)
 			var armed: bool = pw.get("armed", false)
-			var status := "ARMED" if armed else "[SPACE]"
-			hud_label.text = "[color=#%s]%s %s %s[/color]" % [
-				color.to_html(false), Powerup.get_symbol(ptype), Powerup.get_name(ptype), status]
+			if armed:
+				hud_label.text = "[color=#%s]%s %s[/color]  [color=#ffcc44]ARMED[/color]" % [
+					color.to_html(false), Powerup.get_symbol(ptype), Powerup.get_name(ptype)]
+				# Pulse border when armed
+				var style: StyleBoxFlat = hud_panel.get_theme_stylebox("panel")
+				style.border_color = Color(1, 0.85, 0.2, 0.8)
+				style.border_width_left = 2
+				style.border_width_right = 2
+				style.border_width_top = 2
+				style.border_width_bottom = 2
+			else:
+				hud_label.text = "[color=#%s]%s %s[/color]  [color=#999999]SPACE[/color]" % [
+					color.to_html(false), Powerup.get_symbol(ptype), Powerup.get_name(ptype)]
+				var style: StyleBoxFlat = hud_panel.get_theme_stylebox("panel")
+				style.border_color = Color(1, 0.85, 0.2, 0.4)
+				style.border_width_left = 1
+				style.border_width_right = 1
+				style.border_width_top = 1
+				style.border_width_bottom = 1
 			hud_panel.visible = true
 		else:
 			hud_panel.visible = false
