@@ -821,10 +821,9 @@ func _rpc_game_sync_scores(scores: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _rpc_game_restart() -> void:
-	# Room is disposable — server cleaned it up, send client back to menu
-	current_room = ""
-	my_slot = -1
-	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_restart()
 
 
 @rpc("authority", "call_remote", "reliable")

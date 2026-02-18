@@ -22,6 +22,17 @@ func _init(game_manager: Node) -> void:
 	gm = game_manager
 
 
+func reset() -> void:
+	# Free any visual powerup items on the table
+	for item in items:
+		if item is Node and is_instance_valid(item):
+			item.queue_free()
+	items.clear()
+	player_powerups.clear()
+	spawn_timer = 10.0
+	update_hud()
+
+
 func _log(msg: String) -> void:
 	gm._log(msg)
 

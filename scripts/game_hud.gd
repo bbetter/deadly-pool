@@ -165,6 +165,9 @@ func create(parent: CanvasLayer) -> void:
 # --- Countdown ---
 
 func create_countdown_overlay(parent: CanvasLayer) -> void:
+	countdown_active = true
+	countdown_value = 3
+	countdown_elapsed = 0.0
 	countdown_overlay = ColorRect.new()
 	countdown_overlay.color = Color(0, 0, 0, 0.6)
 	countdown_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -283,6 +286,18 @@ func show_game_over(winner_slot: int) -> void:
 
 	if restart_button:
 		restart_button.visible = true
+
+
+func hide_game_over() -> void:
+	if win_label:
+		win_label.visible = false
+		win_label.text = ""
+	if restart_button:
+		restart_button.visible = false
+	# Clear old kill feed entries
+	if kill_feed:
+		for child in kill_feed.get_children():
+			child.queue_free()
 
 
 func _position_win_ui() -> void:

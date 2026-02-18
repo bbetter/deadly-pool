@@ -959,12 +959,7 @@ func _handle_game_over(winner_slot: int) -> void:
 		get_tree().create_timer(5.0).timeout.connect(func() -> void:
 			if not is_instance_valid(self):
 				return
-			print("[SERVER] Room %s: Round complete - cleaning up..." % _room_code)
-			# Tell clients to go back to menu
-			for pid in NetworkManager.get_room_peers(_room_code):
-				NetworkManager._rpc_game_restart.rpc_id(pid)
-			# Clean up the room (disposable rooms)
-			NetworkManager.cleanup_room(_room_code)
+			_server_restart_round()
 		)
 		return
 
@@ -975,8 +970,68 @@ func _handle_game_over(winner_slot: int) -> void:
 		get_tree().create_timer(5.0).timeout.connect(func() -> void:
 			if not is_instance_valid(self):
 				return
-			get_tree().reload_current_scene()
+			_local_restart_round()
 		)
+
+
+func _reset_round_state() -> void:
+	# Clear existing balls
+	for ball in balls:
+		if ball != null and is_instance_valid(ball):
+			ball.queue_free()
+	balls.clear()
+	alive_players.clear()
+	slot_to_peer.clear()
+
+	# Reset game state
+	game_over = false
+	is_dragging = false
+	active_ball = null
+	_launch_pending = false
+	_server_launch_cooldown.clear()
+	_collision_pairs.clear()
+	_wall_collision.clear()
+	_server_collision_pairs_phys.clear()
+
+	# Reset powerups
+	powerup_system.reset()
+
+	# Remove old bot AI
+	if _bot_ai and is_instance_valid(_bot_ai):
+		_bot_ai.queue_free()
+		_bot_ai = null
+
+
+func _server_restart_round() -> void:
+	_log("ROUND_RESTART starting new round")
+	_reset_round_state()
+	_room_start_time = Time.get_ticks_msec()
+
+	# Tell clients to reset
+	for pid in NetworkManager.get_room_peers(_room_code):
+		NetworkManager._rpc_game_restart.rpc_id(pid)
+
+	# Re-spawn balls (reuses the same spawn logic)
+	_server_spawn_balls()
+
+
+func _local_restart_round() -> void:
+	_reset_round_state()
+
+	# Reset HUD
+	game_hud.hide_game_over()
+	game_hud.create_countdown_overlay(hud)
+
+	# Re-spawn balls locally
+	_spawn_balls_local()
+
+
+func client_receive_restart() -> void:
+	_reset_round_state()
+
+	# Reset HUD
+	game_hud.hide_game_over()
+	game_hud.create_countdown_overlay(hud)
 
 
 func _server_check_ball_collisions() -> void:
