@@ -1,0 +1,19 @@
+[remap]
+
+importer="mp3"
+type="AudioStreamMP3"
+uid="uid://cob6d2ywfdva0"
+path="res://.godot/imported/Eventide Hexagons.mp3-cb56b25cd45376441ae1a961d52160c9.mp3str"
+
+[deps]
+
+source_file="res://Eventide Hexagons.mp3"
+dest_files=["res://.godot/imported/Eventide Hexagons.mp3-cb56b25cd45376441ae1a961d52160c9.mp3str"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

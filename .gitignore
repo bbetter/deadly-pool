@@ -1,0 +1,19 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Export builds
+export/
+
+# Release packages
+dist/
+
+# Export credentials (may contain signing keys)
+export_credentials.cfg
+
+# Test logs
+test_logs/
+
+# OS junk
+.DS_Store
+Thumbs.db

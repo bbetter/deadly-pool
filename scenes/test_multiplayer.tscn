@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=2 uid="uid://test_multiplayer_scene"]
+
+[ext_resource type="Script" path="res://scripts/test_multiplayer.gd" id="1_test_script"]
+[ext_resource type="Font" path="res://.godot/asset_library/fonts/noto/NotoSansCJK-Bold.ttc" type="Font" id="2_font"]
+
+[node name="TestMultiplayer" type="Control"]
+script = ExtResource("1_test_script")
+
+[node name="Status" type="Label" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+size = Vector2(780, 500)
+position = Vector2(10, 10)
+text = "Multiplayer Test Status"
+vertical_alignment = 1
+horizontal_alignment = 0
+autowrap_mode = 2
+theme_override_fonts/font = ExtResource("2_font")
+
+[node name="StartButton" type="Button" parent="."]
+size = Vector2(150, 40)
+position = Vector2(325, 520)
+text = "Start Test"
+
+[connection signal="pressed" from="StartButton" to="." method="_on_start_button_pressed"]

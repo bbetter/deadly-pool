@@ -1,0 +1,52 @@
+[gd_scene load_steps=7 format=3 uid="uid://dmain001"]
+
+[ext_resource type="Script" path="res://scripts/game_manager.gd" id="1_gm"]
+[ext_resource type="Script" path="res://scripts/arena.gd" id="2_arena"]
+[ext_resource type="Script" path="res://scripts/camera_rig.gd" id="3_cam"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_1"]
+size = Vector2(20, 20)
+
+[sub_resource type="StandardMaterial3D" id="Mat_Arena"]
+albedo_color = Color(0.1, 0.35, 0.15, 1)
+roughness = 0.9
+
+[sub_resource type="BoxShape3D" id="BoxShape_Arena"]
+size = Vector3(20, 0.5, 20)
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_gm")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.354, 0.354, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 5, 10, 5)
+light_energy = 1.2
+shadow_enabled = true
+
+[node name="DirectionalLight3D2" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, 0.354, -0.354, 0, 0.707, 0.707, 0.5, -0.612, 0.612, -5, 8, -5)
+light_energy = 0.5
+
+[node name="Arena" type="StaticBody3D" parent="."]
+script = ExtResource("2_arena")
+
+[node name="ArenaMesh" type="MeshInstance3D" parent="Arena"]
+mesh = SubResource("PlaneMesh_1")
+surface_material_override/0 = SubResource("Mat_Arena")
+
+[node name="ArenaCollision" type="CollisionShape3D" parent="Arena"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
+shape = SubResource("BoxShape_Arena")
+
+[node name="EdgeWalls" type="Node3D" parent="Arena"]
+
+[node name="CameraRig" type="Node3D" parent="."]
+script = ExtResource("3_cam")
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig"]
+transform = Transform3D(1, 0, 0, 0, 0.5, 0.866, 0, -0.866, 0.5, 0, 15, 12)
+fov = 50.0
+
+[node name="Balls" type="Node3D" parent="."]
+
+
+[node name="HUD" type="CanvasLayer" parent="."]

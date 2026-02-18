@@ -1,0 +1,44 @@
+[gd_scene load_steps=6 format=3 uid="uid://dball001"]
+
+[ext_resource type="Script" path="res://scripts/pool_ball.gd" id="1_ball"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_1"]
+radius = 0.35
+height = 0.7
+radial_segments = 32
+rings = 16
+
+[sub_resource type="SphereShape3D" id="SphereShape_1"]
+radius = 0.35
+
+[sub_resource type="StandardMaterial3D" id="Mat_Ball"]
+albedo_color = Color(1, 1, 1, 1)
+metallic = 0.3
+roughness = 0.2
+
+[sub_resource type="PhysicsMaterial" id="PhysMat_Ball"]
+friction = 0.2
+bounce = 0.6
+
+[node name="PoolBall" type="RigidBody3D"]
+mass = 0.5
+physics_material_override = SubResource("PhysMat_Ball")
+linear_damp = 1.2
+angular_damp = 1.5
+continuous_cd = true
+script = ExtResource("1_ball")
+
+[node name="BallMesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("SphereMesh_1")
+surface_material_override/0 = SubResource("Mat_Ball")
+
+[node name="BallCollision" type="CollisionShape3D" parent="."]
+shape = SubResource("SphereShape_1")
+
+[node name="NumberLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.55, 0)
+pixel_size = 0.01
+text = "1"
+font_size = 40
+outline_size = 8
+billboard = 1
