@@ -161,7 +161,8 @@ func connect_to_server(ip: String, player_name: String) -> void:
 	elif ip == "localhost" or ip == "127.0.0.1":
 		url = "ws://%s:%d" % [ip, PORT]
 	else:
-		url = "wss://%s:%d" % [ip, PORT]
+		# Remote server: connect via Caddy reverse proxy path
+		url = "wss://%s/ws" % ip
 	var err := peer.create_client(url)
 	if err != OK:
 		connection_failed.emit()

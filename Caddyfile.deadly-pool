@@ -1,9 +1,22 @@
-# Admin dashboard
+# Web client — serves static Godot web export with required headers
 dp.900dfe11a-media.pp.ua {
-	reverse_proxy deadly-pool-server:8081
+	header Cross-Origin-Opener-Policy "same-origin"
+	header Cross-Origin-Embedder-Policy "require-corp"
+
+	# WebSocket path proxied to Godot server
+	handle /ws {
+		reverse_proxy deadly-pool-server:9876
+	}
+
+	# Static files (web export build)
+	handle {
+		root * /srv/deadly-pool/web
+		try_files {path} /deadly-pool.html
+		file_server
+	}
 }
 
-# WebSocket game server — Caddy auto-handles TLS (wss://)
-dpws.900dfe11a-media.pp.ua {
-	reverse_proxy deadly-pool-server:9876
+# Admin dashboard
+admin-dp.900dfe11a-media.pp.ua {
+	reverse_proxy deadly-pool-server:8081
 }
