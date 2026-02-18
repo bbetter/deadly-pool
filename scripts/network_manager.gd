@@ -134,15 +134,15 @@ func _start_dedicated_server() -> void:
 		if args[i].begins_with("--port="):
 			port = int(args[i].split("=")[1])
 
-	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(port, MAX_PLAYERS * 4)  # Allow more connections for multiple rooms
+	var peer := WebSocketMultiplayerPeer.new()
+	var err := peer.create_server(port)
 	if err != OK:
-		print("[SERVER] Failed to create server on port %d: %s" % [port, error_string(err)])
+		print("[SERVER] Failed to create WebSocket server on port %d: %s" % [port, error_string(err)])
 		return
 
 	multiplayer.multiplayer_peer = peer
 	my_peer_id = 1
-	print("[SERVER] Deadly Pool server started on port %d" % port)
+	print("[SERVER] Deadly Pool WebSocket server started on port %d" % port)
 	print("[SERVER] Waiting for players to create or join rooms...")
 
 	# Create persistent container for game instances
@@ -153,8 +153,17 @@ func _start_dedicated_server() -> void:
 
 func connect_to_server(ip: String, player_name: String) -> void:
 	my_name = player_name
-	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_client(ip, PORT)
+	var peer := WebSocketMultiplayerPeer.new()
+	# Build WebSocket URL from ip/hostname
+	var url: String
+	if ip.begins_with("ws://") or ip.begins_with("wss://"):
+		url = ip
+	elif ip == "localhost" or ip == "127.0.0.1":
+		url = "ws://%s:%d" % [ip, PORT]
+	else:
+		# Remote server: connect via Caddy reverse proxy path
+		url = "wss://%s/ws" % ip
+	var err := peer.create_client(url)
 	if err != OK:
 		connection_failed.emit()
 		return
@@ -801,7 +810,9 @@ func _rpc_game_sync_scores(scores: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _rpc_game_restart() -> void:
-	get_tree().reload_current_scene()
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_restart()
 
 
 @rpc("authority", "call_remote", "reliable")

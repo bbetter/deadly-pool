@@ -1,11 +1,22 @@
-# Replace the existing dp.900dfe11a-media.pp.ua block in /home/andri/caddy/Caddyfile with:
-
-# Note: actual Caddyfile on server uses Docker network:
-#   dp.900dfe11a-media.pp.ua {
-#       reverse_proxy deadly-pool-server:8081
-#   }
-# /builds are served from a separate sites config.
-
+# Web client — serves Godot web export with required COOP/COEP headers
 dp.900dfe11a-media.pp.ua {
+	header Cross-Origin-Opener-Policy "same-origin"
+	header Cross-Origin-Embedder-Policy "require-corp"
+
+	# WebSocket proxied to Godot server container
+	handle /ws {
+		reverse_proxy deadly-pool-server:9876
+	}
+
+	# Static web client files
+	handle {
+		root * /home/andri/caddy/sites/deadly-pool/web
+		try_files {path} /deadly-pool.html
+		file_server
+	}
+}
+
+# Admin dashboard
+admin-dp.900dfe11a-media.pp.ua {
 	reverse_proxy deadly-pool-server:8081
 }
