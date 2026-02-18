@@ -1,11 +1,9 @@
-# Replace the existing dp.900dfe11a-media.pp.ua block in /home/andri/caddy/Caddyfile with:
-
-# Note: actual Caddyfile on server uses Docker network:
-#   dp.900dfe11a-media.pp.ua {
-#       reverse_proxy deadly-pool-server:8081
-#   }
-# /builds are served from a separate sites config.
-
+# Admin dashboard
 dp.900dfe11a-media.pp.ua {
 	reverse_proxy deadly-pool-server:8081
+}
+
+# WebSocket game server — Caddy auto-handles TLS (wss://)
+dpws.900dfe11a-media.pp.ua {
+	reverse_proxy deadly-pool-server:9876
 }

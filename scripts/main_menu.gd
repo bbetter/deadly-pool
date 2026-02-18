@@ -450,7 +450,7 @@ func _on_online_back_pressed() -> void:
 func _on_create_pressed() -> void:
 	var ip := ip_input.text.strip_edges()
 	if ip.is_empty():
-		ip = "dp.900dfe11a-media.pp.ua"
+		ip = "dpws.900dfe11a-media.pp.ua"
 
 	var player_name := name_input.text.strip_edges()
 	if player_name.is_empty():
@@ -468,7 +468,7 @@ func _on_create_pressed() -> void:
 func _on_join_pressed() -> void:
 	var ip := ip_input.text.strip_edges()
 	if ip.is_empty():
-		ip = "dp.900dfe11a-media.pp.ua"
+		ip = "dpws.900dfe11a-media.pp.ua"
 
 	var player_name := name_input.text.strip_edges()
 	if player_name.is_empty():
