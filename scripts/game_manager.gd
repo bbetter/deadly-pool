@@ -970,6 +970,14 @@ func _handle_game_over(winner_slot: int) -> void:
 
 	game_hud.show_game_over(winner_slot)
 
+	# Single-player: auto-restart after delay
+	if NetworkManager.is_single_player:
+		get_tree().create_timer(5.0).timeout.connect(func() -> void:
+			if not is_instance_valid(self):
+				return
+			get_tree().reload_current_scene()
+		)
+
 
 func _server_check_ball_collisions() -> void:
 	var count := balls.size()
