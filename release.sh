@@ -118,6 +118,7 @@ docker run -d \
   --network homelab-apps \
   -p 9876:9876/tcp \
   ${IMAGE_NAME}:latest
+docker image prune -f
 EOF
 
 rm -f "$TAR_FILE"
