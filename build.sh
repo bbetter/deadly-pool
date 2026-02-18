@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-# Usage: ./release.sh [targets...] [--deploy]
+# Usage: ./build.sh <targets...> [--deploy]
 #
-# Targets (default: server web):
+# Targets (at least one required):
 #   server  - Export headless server, build Docker image
 #   web     - Export web client
 #   linux   - Export Linux native client
@@ -11,11 +11,11 @@ set -e
 #   all     - All of the above
 #
 # Examples:
-#   ./release.sh                    # build server + web
-#   ./release.sh --deploy           # build server + web, deploy to minipc
-#   ./release.sh all --deploy       # build everything, deploy
-#   ./release.sh win linux          # build native clients only
-#   ./release.sh server --deploy    # rebuild and deploy server only
+#   ./build.sh server web              # build server + web
+#   ./build.sh server web --deploy     # build and deploy server + web
+#   ./build.sh all --deploy            # build everything, deploy
+#   ./build.sh web --deploy            # redeploy web client only
+#   ./build.sh win linux               # native clients only
 
 REMOTE_HOST="andri@192.168.0.108"
 REMOTE_BUILDS_DIR="~/caddy/sites/deadly-pool"
@@ -43,10 +43,16 @@ for arg in "$@"; do
     esac
 done
 
-# Default: server + web
 if [ "$HAS_TARGETS" = false ]; then
-    BUILD_SERVER=true
-    BUILD_WEB=true
+    echo "Usage: ./build.sh <targets...> [--deploy]"
+    echo ""
+    echo "Targets: server web linux win all"
+    echo ""
+    echo "Examples:"
+    echo "  ./build.sh server web --deploy"
+    echo "  ./build.sh all --deploy"
+    echo "  ./build.sh web --deploy"
+    exit 1
 fi
 
 # 1. Read version
@@ -64,14 +70,14 @@ $BUILD_WEB && TARGETS="${TARGETS} web"
 $BUILD_LINUX && TARGETS="${TARGETS} linux"
 $BUILD_WIN && TARGETS="${TARGETS} win"
 echo "Targets:${TARGETS}"
+$DO_DEPLOY && echo "Deploy: yes"
 echo ""
 
 # 2. Stamp version
 sed -i "s/^const VERSION := \".*\"/const VERSION := \"${VER}\"/" scripts/version.gd
-echo "[1] Version stamped: ${VER}"
 
 # 3. Export
-echo "[2] Exporting..."
+echo "Exporting..."
 $BUILD_LINUX && ./export-linux.sh
 $BUILD_WIN && ./export-windows.sh
 $BUILD_SERVER && ./export-server.sh
@@ -93,7 +99,6 @@ $BUILD_WEB && echo "  export/web/                         ($(du -sh export/web/ 
 
 # 5. Generate latest.json (only if building native clients)
 if $BUILD_LINUX || $BUILD_WIN; then
-    echo "[3] Generating latest.json..."
     cat > dist/latest.json <<EOF
 {
   "version": "${VER}",
@@ -111,7 +116,6 @@ echo ""
 echo "Build complete!"
 
 if [ "$DO_DEPLOY" = false ]; then
-    echo "Run with --deploy to upload to minipc."
     exit 0
 fi
 
