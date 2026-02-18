@@ -88,6 +88,10 @@ ssh "$REMOTE_HOST" "mkdir -p ${REMOTE_BUILDS_DIR}"
 scp dist/deadly-pool-${VER}-linux.zip dist/deadly-pool-${VER}-windows.zip dist/latest.json "$REMOTE_HOST:${REMOTE_BUILDS_DIR}/"
 echo "Native builds uploaded."
 
+# Keep only 3 most recent versions
+echo "Cleaning old builds..."
+ssh "$REMOTE_HOST" 'cd '"${REMOTE_BUILDS_DIR}"' && ls -t *.zip 2>/dev/null | grep linux | tail -n +4 | while read f; do ver=$(echo "$f" | sed "s/deadly-pool-\(.*\)-linux.zip/\1/"); rm -f "deadly-pool-${ver}-linux.zip" "deadly-pool-${ver}-windows.zip"; echo "  removed v${ver}"; done'
+
 # Upload web client
 echo "Uploading web client..."
 ssh "$REMOTE_HOST" "mkdir -p ${REMOTE_WEB_DIR}"
