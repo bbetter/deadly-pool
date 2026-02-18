@@ -105,8 +105,8 @@ func _ready() -> void:
 	aim_visuals = AimVisuals.new(self)
 
 	if _is_headless:
-		# Server has no visual countdown — disable immediately so bot AI can start
-		game_hud.countdown_active = false
+		# Server delays bot AI to match client countdown (3-2-1-GO = ~4s)
+		_server_start_countdown()
 	else:
 		game_hud.create(hud)
 		powerup_system.create_hud(hud)
@@ -345,6 +345,15 @@ func client_receive_aim(slot: int, direction: Vector3, power: float) -> void:
 
 
 # --- Ball spawning ---
+
+func _server_start_countdown() -> void:
+	# Keep countdown_active true so bots wait, then release after client countdown finishes
+	game_hud.countdown_active = true
+	get_tree().create_timer(4.5).timeout.connect(func() -> void:
+		if is_instance_valid(self):
+			game_hud.countdown_active = false
+	)
+
 
 func _apply_ball_physics(ball: PoolBall) -> void:
 	ball.mass = GameConfig.ball_mass
@@ -1006,6 +1015,9 @@ func _server_restart_round() -> void:
 	_log("ROUND_RESTART starting new round")
 	_reset_round_state()
 	_room_start_time = Time.get_ticks_msec()
+
+	# Delay bots to match client countdown
+	_server_start_countdown()
 
 	# Tell clients to reset
 	for pid in NetworkManager.get_room_peers(_room_code):
