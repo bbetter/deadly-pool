@@ -522,7 +522,7 @@ func on_speed_boost_armed(slot: int) -> void:
 	if slot in player_powerups:
 		player_powerups[slot]["armed"] = true
 	update_hud()
-	_log("VISUAL_SPEED_BOOST_ARMED ball=%d icon=⚡" % slot)
+	_log("VISUAL_SPEED_BOOST_ARMED ball=%d icon=>>" % slot)
 
 
 func on_bomb_armed(slot: int) -> void:
@@ -533,7 +533,7 @@ func on_bomb_armed(slot: int) -> void:
 	if slot in player_powerups:
 		player_powerups[slot]["armed"] = true
 	update_hud()
-	_log("VISUAL_BOMB_ARMED ball=%d icon=💣" % slot)
+	_log("VISUAL_BOMB_ARMED ball=%d icon=(*)" % slot)
 
 
 func on_shield_activate(slot: int) -> void:

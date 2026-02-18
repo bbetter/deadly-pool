@@ -337,15 +337,15 @@ func update_powerup_icon() -> void:
 		return
 
 	if bomb_armed:
-		powerup_icon.text = "💣"
+		powerup_icon.text = "(*)"
 		powerup_icon.modulate = Color(1.0, 0.3, 0.1)
 		powerup_icon.visible = true
 	elif shield_active:
-		powerup_icon.text = "🛡️"
+		powerup_icon.text = "(O)"
 		powerup_icon.modulate = Color(0.3, 0.5, 1.0)
 		powerup_icon.visible = true
 	elif speed_boost_armed:
-		powerup_icon.text = "⚡"
+		powerup_icon.text = ">>"
 		powerup_icon.modulate = Color(0.2, 0.9, 0.9)
 		powerup_icon.visible = true
 	else:

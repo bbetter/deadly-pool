@@ -9,9 +9,9 @@ enum Type {
 }
 
 const META := {
-	1: {"name": "Speed Boost", "symbol": "⚡", "color": Color(0.2, 0.9, 0.9), "desc": "SPACE to arm - 1.5x power on next shot"},
-	2: {"name": "Bomb", "symbol": "💣", "color": Color(1.0, 0.3, 0.1), "desc": "SPACE to arm - explode on hit"},
-	3: {"name": "Shield", "symbol": "🛡️", "color": Color(0.3, 0.5, 1.0), "desc": "SPACE to arm - block one hit"},
+	1: {"name": "Speed Boost", "symbol": ">>", "color": Color(0.2, 0.9, 0.9), "desc": "SPACE to arm - 1.5x power on next shot"},
+	2: {"name": "Bomb", "symbol": "(*)", "color": Color(1.0, 0.3, 0.1), "desc": "SPACE to arm - explode on hit"},
+	3: {"name": "Shield", "symbol": "(O)", "color": Color(0.3, 0.5, 1.0), "desc": "SPACE to arm - block one hit"},
 }
 
 static func get_name(type: int) -> String:

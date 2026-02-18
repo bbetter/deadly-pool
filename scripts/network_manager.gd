@@ -86,17 +86,6 @@ func cleanup_room(room_code: String) -> void:
 
 
 func _ready() -> void:
-	# Add emoji fallback font for web builds (no system emoji font available)
-	var emoji_font := load("res://fonts/NotoEmoji.ttf") as Font
-	if emoji_font:
-		var default_font := ThemeDB.get_default_theme().default_font
-		if default_font:
-			default_font.add_fallback(emoji_font)
-		else:
-			var font := SystemFont.new()
-			font.add_fallback(emoji_font)
-			ThemeDB.get_default_theme().default_font = font
-
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)

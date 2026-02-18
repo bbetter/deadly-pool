@@ -317,7 +317,7 @@ func add_kill_feed_entry(slot: int) -> void:
 		return
 	var color: Color = gm.player_colors[slot] if slot < gm.player_colors.size() else Color.WHITE
 	var pname: String = gm.player_names[slot] if slot < gm.player_names.size() else "Player %d" % (slot + 1)
-	_add_feed_entry("☠ %s eliminated" % pname, color, Color(0, 0, 0, 0.6))
+	_add_feed_entry("[X] %s eliminated" % pname, color, Color(0, 0, 0, 0.6))
 
 
 func add_disconnect_feed_entry(slot: int) -> void:
@@ -326,14 +326,14 @@ func add_disconnect_feed_entry(slot: int) -> void:
 	var color: Color = gm.player_colors[slot] if slot < gm.player_colors.size() else Color.WHITE
 	var dim_color := Color(color.r * 0.7, color.g * 0.7, color.b * 0.7)
 	var pname: String = gm.player_names[slot] if slot < gm.player_names.size() else "Player %d" % (slot + 1)
-	_add_feed_entry("⚡ %s disconnected" % pname, dim_color, Color(0.15, 0.1, 0.0, 0.6))
+	_add_feed_entry("[!] %s disconnected" % pname, dim_color, Color(0.15, 0.1, 0.0, 0.6))
 
 
 func add_kill_feed_win_entry(slot: int) -> void:
 	if kill_feed == null:
 		return
 	var pname: String = gm.player_names[slot] if slot < gm.player_names.size() else "Player %d" % (slot + 1)
-	_add_feed_entry_styled("👑 %s wins!" % pname, Color(1, 0.85, 0.2), 18,
+	_add_feed_entry_styled("* %s wins! *" % pname, Color(1, 0.85, 0.2), 18,
 		Color(0.15, 0.12, 0.0, 0.8), Color(1, 0.85, 0.2, 0.6), false)
 
 
@@ -455,7 +455,7 @@ func update_scoreboard() -> void:
 				style.border_width_top = 0
 				style.border_width_bottom = 0
 		else:
-			label.text = "  %s%s  ☠" % [short_name, wins_str]
+			label.text = "  %s%s  [X]" % [short_name, wins_str]
 			label.add_theme_color_override("font_color", Color(color.r * 0.4, color.g * 0.4, color.b * 0.4, 0.6))
 			style.bg_color = Color(0, 0, 0, 0.3)
 			style.border_width_left = 0
