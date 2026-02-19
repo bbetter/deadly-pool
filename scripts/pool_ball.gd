@@ -26,6 +26,11 @@ var _anchor_saved_mass: float = 0.5  # Reused for shield mass change
 @onready var number_label: Label3D = $NumberLabel
 var powerup_icon: Label3D = null  # Created dynamically in _create_powerup_icon()
 
+# Static cache — procedural audio generated once, shared across all ball instances
+static var _shared_ball_hit_stream: AudioStreamWAV
+static var _shared_wall_hit_stream: AudioStreamWAV
+static var _shared_fall_stream: AudioStreamWAV
+
 var hit_ball_sound: AudioStreamPlayer3D
 var hit_wall_sound: AudioStreamPlayer3D
 var fall_sound: AudioStreamPlayer3D
@@ -38,6 +43,7 @@ var _is_client: bool = false
 var _glow_time: float = 0.0
 var _is_local_ball: bool = false
 var _ball_mat: StandardMaterial3D
+var _icon_update_timer: float = 0.0  # Throttle powerup icon updates
 
 # Client-readable velocity (linear_velocity may not be writable on frozen bodies)
 var synced_velocity: Vector3 = Vector3.ZERO
@@ -47,7 +53,6 @@ var _prev_velocity: Vector3 = Vector3.ZERO  # For server-side direction change d
 var _to_pos: Vector3
 var _to_rot: Vector3
 var _to_lin_vel: Vector3
-var _to_ang_vel: Vector3
 var _snapshot_count: int = 0  # How many snapshots received so far
 
 # Pocketing animation
@@ -125,20 +130,28 @@ func setup(id: int, color: Color) -> void:
 
 
 func _setup_sounds() -> void:
+	# Generate procedural audio once; reuse the same streams across all balls
+	if _shared_ball_hit_stream == null:
+		_shared_ball_hit_stream = _generate_ball_hit_sound()
+	if _shared_wall_hit_stream == null:
+		_shared_wall_hit_stream = _generate_wall_hit_sound()
+	if _shared_fall_stream == null:
+		_shared_fall_stream = _generate_fall_sound()
+
 	hit_ball_sound = AudioStreamPlayer3D.new()
-	hit_ball_sound.stream = _generate_ball_hit_sound()
+	hit_ball_sound.stream = _shared_ball_hit_stream
 	hit_ball_sound.max_db = 5.0
 	hit_ball_sound.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
 	add_child(hit_ball_sound)
 
 	hit_wall_sound = AudioStreamPlayer3D.new()
-	hit_wall_sound.stream = _generate_wall_hit_sound()
+	hit_wall_sound.stream = _shared_wall_hit_stream
 	hit_wall_sound.max_db = 3.0
 	hit_wall_sound.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
 	add_child(hit_wall_sound)
 
 	fall_sound = AudioStreamPlayer3D.new()
-	fall_sound.stream = _generate_fall_sound()
+	fall_sound.stream = _shared_fall_stream
 	fall_sound.max_db = 8.0
 	fall_sound.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
 	add_child(fall_sound)
@@ -177,35 +190,37 @@ func _physics_process(delta: float) -> void:
 		angular_velocity = Vector3.ZERO
 
 	# Detect sudden direction changes (collisions with walls/balls/unknown)
-	var prev_spd := _prev_velocity.length()
-	if speed > 1.0 and prev_spd > 1.0:
-		var dot := linear_velocity.normalized().dot(_prev_velocity.normalized())
-		if dot < 0.5:  # More than ~60 degree change
-			var pos := global_position
-			# Use Jolt's own contact list to see what we actually hit
-			var colliders := get_colliding_bodies()
-			var hit_what := ""
-			for body in colliders:
-				if body is PoolBall:
-					hit_what += "BALL_%d " % body.slot
-				elif body is StaticBody3D:
-					hit_what += "STATIC(%s@%.1f,%.1f) " % [body.name, body.global_position.x, body.global_position.z]
-				else:
-					hit_what += "%s " % body.name
-			if hit_what.is_empty():
-				# Fallback: distance-based guess
-				var near_wall := absf(pos.x) > 9.0 or absf(pos.z) > 9.0
-				hit_what = "WALL_NEAR" if near_wall else "NOTHING"
-			# Find room code from parent GameManager
-			var room_code := ""
-			var gm_node := get_parent().get_parent()  # Ball -> Balls -> GameManager
-			if gm_node and "_room_code" in gm_node:
-				room_code = gm_node._room_code
-			NetworkManager.room_log(room_code,
-				"BOUNCE ball=%d hit=[%s] pos=(%.2f,%.2f) vel_before=(%.1f,%.1f)v=%.1f vel_after=(%.1f,%.1f)v=%.1f dot=%.2f" % [
-				slot, hit_what.strip_edges(), pos.x, pos.z,
-				_prev_velocity.x, _prev_velocity.z, prev_spd,
-				linear_velocity.x, linear_velocity.z, speed, dot])
+	# DEBUG ONLY - disable in release builds for performance
+	if OS.is_debug_build() and not _is_client:
+		var prev_spd := _prev_velocity.length()
+		if speed > 1.0 and prev_spd > 1.0:
+			var dot := linear_velocity.normalized().dot(_prev_velocity.normalized())
+			if dot < 0.5:  # More than ~60 degree change
+				var pos := global_position
+				# Use Jolt's own contact list to see what we actually hit
+				var colliders := get_colliding_bodies()
+				var hit_what := ""
+				for body in colliders:
+					if body is PoolBall:
+						hit_what += "BALL_%d " % body.slot
+					elif body is StaticBody3D:
+						hit_what += "STATIC(%s@%.1f,%.1f) " % [body.name, body.global_position.x, body.global_position.z]
+					else:
+						hit_what += "%s " % body.name
+				if hit_what.is_empty():
+					# Fallback: distance-based guess
+					var near_wall := absf(pos.x) > 9.0 or absf(pos.z) > 9.0
+					hit_what = "WALL_NEAR" if near_wall else "NOTHING"
+				# Find room code from parent GameManager
+				var room_code := ""
+				var gm_node := get_parent().get_parent()  # Ball -> Balls -> GameManager
+				if gm_node and "_room_code" in gm_node:
+					room_code = gm_node._room_code
+				NetworkManager.room_log(room_code,
+					"BOUNCE ball=%d hit=[%s] pos=(%.2f,%.2f) vel_before=(%.1f,%.1f)v=%.1f vel_after=(%.1f,%.1f)v=%.1f dot=%.2f" % [
+					slot, hit_what.strip_edges(), pos.x, pos.z,
+					_prev_velocity.x, _prev_velocity.z, prev_spd,
+					linear_velocity.x, linear_velocity.z, speed, dot])
 	_prev_velocity = linear_velocity
 
 
@@ -214,16 +229,21 @@ func _process(delta: float) -> void:
 		_sound_cooldown -= delta
 
 	# Update powerup icon position (float above ball, billboard to camera)
+	# Throttle updates to 10Hz to reduce CPU load
 	if powerup_icon != null and is_alive and not is_pocketing:
 		if bomb_armed or shield_active or speed_boost_armed:
 			if not powerup_icon.visible:
 				update_powerup_icon()  # Set correct symbol
 			powerup_icon.visible = true
 			powerup_icon.global_position = global_position + Vector3(0, 1.2, 0)
-			# Billboard - face camera
-			var cam := get_viewport().get_camera_3d()
-			if cam:
-				powerup_icon.look_at(cam.global_position)
+			
+			# Billboard - face camera (throttled to 10Hz)
+			_icon_update_timer -= delta
+			if _icon_update_timer <= 0.0:
+				_icon_update_timer = 0.1  # Update every 0.1s (10Hz)
+				var cam := get_viewport().get_camera_3d()
+				if cam:
+					powerup_icon.look_at(cam.global_position)
 		else:
 			powerup_icon.visible = false
 
@@ -271,18 +291,17 @@ func _process(delta: float) -> void:
 		rotation = rotation.lerp(_to_rot, blend)
 
 		synced_velocity = _to_lin_vel
-		linear_velocity = _to_lin_vel
-		angular_velocity = _to_ang_vel
+		# NOTE: Don't set linear_velocity/angular_velocity on frozen bodies
+		# It can trigger physics recalculations and cause spikes
 
 
-func receive_state(pos: Vector3, rot: Vector3, lin_vel: Vector3, ang_vel: Vector3) -> void:
+func receive_state(pos: Vector3, rot: Vector3, lin_vel: Vector3) -> void:
 	if is_pocketing:
 		return  # Don't update state during pocket animation
 
 	_to_pos = pos
 	_to_rot = rot
 	_to_lin_vel = lin_vel
-	_to_ang_vel = ang_vel
 	synced_velocity = lin_vel
 	_snapshot_count = mini(_snapshot_count + 1, 2)
 

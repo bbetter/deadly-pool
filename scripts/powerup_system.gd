@@ -485,7 +485,7 @@ func on_picked_up(powerup_id: int, slot: int, type: int) -> void:
 		var item = items[i]
 		if item is Powerup.PowerupItem and item.powerup_id == powerup_id:
 			if not gm._is_headless:
-				var burst := ComicBurst.create(item.position + Vector3(0, 0.2, 0), Powerup.get_color(type), 0.5, false)
+				var burst := ComicBurst.create(item.position + Vector3(0, 0.2, 0), Powerup.get_color(type), 0.5)
 				gm.add_child(burst)
 			item.queue_free()
 			items.remove_at(i)
@@ -590,7 +590,7 @@ func create_shockwave_effect(pos_x: float, pos_z: float) -> void:
 	var pos := Vector3(pos_x, 0.5, pos_z)
 
 	# Central starburst
-	var burst := ComicBurst.create(pos, Color(1.0, 0.4, 0.0), 1.0, true)
+	var burst := ComicBurst.create(pos, Color(1.0, 0.4, 0.0), 1.0)
 	gm.add_child(burst)
 
 	# Expanding shockwave ring
@@ -643,7 +643,7 @@ func create_shockwave_effect(pos_x: float, pos_z: float) -> void:
 
 func create_shield_block_effect(pos_x: float, pos_z: float) -> void:
 	var pos := Vector3(pos_x, 0.5, pos_z)
-	var burst := ComicBurst.create(pos, Color(0.8, 0.9, 1.0), 0.8, false)
+	var burst := ComicBurst.create(pos, Color(0.8, 0.9, 1.0), 0.8)
 	gm.add_child(burst)
 
 
@@ -651,7 +651,7 @@ func create_speed_boost_effect(slot: int) -> void:
 	if slot < 0 or slot >= gm.balls.size() or gm.balls[slot] == null:
 		return
 	var ball: PoolBall = gm.balls[slot]
-	var burst := ComicBurst.create(ball.global_position + Vector3(0, 0.3, 0), Color(0.2, 0.9, 0.9), 0.6, false)
+	var burst := ComicBurst.create(ball.global_position + Vector3(0, 0.3, 0), Color(0.2, 0.9, 0.9), 0.6)
 	gm.add_child(burst)
 
 

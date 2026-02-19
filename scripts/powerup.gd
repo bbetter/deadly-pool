@@ -75,17 +75,7 @@ class PowerupItem extends Node3D:
 		mesh_inst.material_override = mat
 		item.add_child(mesh_inst)
 
-		# Symbol label
-		var label := Label3D.new()
-		label.text = Powerup.get_symbol(type)
-		label.font_size = 72
-		label.position = Vector3(0, 0.12, 0)
-		label.rotation_degrees.x = -90
-		label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
-		label.modulate = Color(1, 1, 1, 0.95)
-		label.outline_size = 8
-		label.outline_modulate = Color(0, 0, 0, 0.7)
-		item.add_child(label)
+		# Label3D removed for web performance — color + glow distinguish powerup types
 
 		return item
 

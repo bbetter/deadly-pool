@@ -16,6 +16,10 @@ const COLOR_TEXT_DIM := Color(0.55, 0.55, 0.6)
 const CORNER_RADIUS := 6
 const SHADOW_COLOR := Color(0, 0, 0, 0.7)
 
+# Helper to get tree (avoids parse error in Godot 4.6)
+func _get_tree() -> SceneTree:
+	return Engine.get_main_loop()
+
 # Core HUD elements
 var info_label: Label
 var power_bar_bg: PanelContainer
@@ -51,8 +55,30 @@ var countdown_overlay: ColorRect
 var countdown_number: Label
 var countdown_active: bool = true
 var countdown_value: int = 3
-var countdown_elapsed: float = 0.0
+var _countdown_start_msec: int = 0  # Wall-clock start time — robust against browser throttling
 var _countdown_tween: Tween
+
+# Debug / perf tracking
+var _debug_label: Label
+var _debug_timer: float = 0.0
+var _sync_count: int = 0
+var _perf_report_timer: float = 0.0
+var _perf_ping_timer: float = 0.0
+var _perf_fps_sum: float = 0.0
+var _perf_fps_min: float = 9999.0
+var _perf_sync_sum: float = 0.0
+var _perf_ping_sum: float = 0.0
+var _perf_sample_count: int = 0
+var _perf_renderer: String = ""
+var _last_sync_time: float = 0.0
+var _sync_gaps: int = 0  # count of gaps > 100ms (missed packets)
+
+# Memory & allocation tracking
+var _prev_mem_mb: float = 0.0
+var _mem_delta_mb: float = 0.0
+var _prev_obj_count: int = 0
+var _obj_delta: int = 0
+var _alloc_spike_count: int = 0  # Count of frames with high allocation
 
 
 func _init(game_manager: Node) -> void:
@@ -261,13 +287,20 @@ func create(parent: CanvasLayer) -> void:
 
 	_update_music_ui()
 
+	# --- Debug overlay (top-center) ---
+	_debug_label = _make_label("", 15, Color(1, 1, 1, 0.85))
+	_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_debug_label.position = Vector2(0, 6)
+	_debug_label.size = Vector2(1280, 24)
+	parent.add_child(_debug_label)
+
 
 # --- Countdown ---
 
 func create_countdown_overlay(parent: CanvasLayer) -> void:
 	countdown_active = true
 	countdown_value = 3
-	countdown_elapsed = 0.0
+	_countdown_start_msec = Time.get_ticks_msec()
 
 	countdown_overlay = ColorRect.new()
 	countdown_overlay.color = Color(0, 0, 0, 0.7)
@@ -302,37 +335,44 @@ func _pulse_countdown_number() -> void:
 	_countdown_tween.tween_property(countdown_number, "scale", Vector2(1.0, 1.0), 0.4).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
 
 
-func update_countdown(delta: float) -> void:
-	countdown_elapsed += delta
-	if countdown_elapsed >= 1.0:
-		countdown_elapsed -= 1.0
-		countdown_value -= 1
+func update_countdown(_delta: float) -> void:
+	# Use wall-clock time so browser tab throttling can't stall the countdown.
+	# Time.get_ticks_msec() advances even when requestAnimationFrame is paused.
+	var real_elapsed := (Time.get_ticks_msec() - _countdown_start_msec) / 1000.0
+	var new_value := 3 - int(real_elapsed)  # 3→2→1→0(GO!)→negative(dismiss)
 
-		if countdown_value > 0:
-			if countdown_number:
-				countdown_number.text = str(countdown_value)
-				_pulse_countdown_number()
-		elif countdown_value == 0:
-			if countdown_number:
-				countdown_number.text = "GO!"
-				countdown_number.add_theme_color_override("font_color", Color(0.3, 1.0, 0.3))
-				# Zoom-in effect for GO!
-				countdown_number.scale = Vector2(0.5, 0.5)
-				if _countdown_tween and _countdown_tween.is_valid():
-					_countdown_tween.kill()
-				_countdown_tween = gm.create_tween()
-				_countdown_tween.tween_property(countdown_number, "scale", Vector2(1.1, 1.1), 0.15).set_ease(Tween.EASE_OUT)
-				_countdown_tween.tween_property(countdown_number, "scale", Vector2(1.0, 1.0), 0.1)
-		else:
-			countdown_active = false
+	if new_value >= countdown_value:
+		return  # Nothing changed yet
+
+	# Jump directly to new_value — handles multiple elapsed seconds in one frame.
+	countdown_value = new_value
+
+	if countdown_value > 0:
+		if countdown_number:
+			countdown_number.text = str(countdown_value)
+			_pulse_countdown_number()
+	elif countdown_value == 0:
+		if countdown_number:
+			countdown_number.text = "GO!"
+			countdown_number.add_theme_color_override("font_color", Color(0.3, 1.0, 0.3))
+			# Zoom-in effect for GO!
+			countdown_number.scale = Vector2(0.5, 0.5)
 			if _countdown_tween and _countdown_tween.is_valid():
 				_countdown_tween.kill()
-			if countdown_overlay:
-				countdown_overlay.queue_free()
-				countdown_overlay = null
-			if countdown_number:
-				countdown_number.queue_free()
-				countdown_number = null
+			_countdown_tween = gm.create_tween()
+			_countdown_tween.tween_property(countdown_number, "scale", Vector2(1.1, 1.1), 0.15).set_ease(Tween.EASE_OUT)
+			_countdown_tween.tween_property(countdown_number, "scale", Vector2(1.0, 1.0), 0.1)
+	else:
+		# new_value < 0: elapsed > 4s, dismiss immediately (catches long-tab-switch case)
+		countdown_active = false
+		if _countdown_tween and _countdown_tween.is_valid():
+			_countdown_tween.kill()
+		if countdown_overlay:
+			countdown_overlay.queue_free()
+			countdown_overlay = null
+		if countdown_number:
+			countdown_number.queue_free()
+			countdown_number = null
 
 
 # --- Info label helpers ---
@@ -516,10 +556,13 @@ func _add_feed_entry_styled(text: String, text_color: Color, font_size: int,
 	slide_tween.tween_property(panel, "modulate:a", 1.0, 0.25).set_ease(Tween.EASE_OUT)
 
 	if auto_fade:
-		var fade_tween := gm.create_tween()
-		fade_tween.tween_interval(5.0)
-		fade_tween.tween_property(panel, "modulate:a", 0.0, 1.0)
-		fade_tween.tween_callback(panel.queue_free)
+		_get_tree().create_timer(5.0).timeout.connect(func() -> void:
+			if not is_instance_valid(panel):
+				return
+			var fade := gm.create_tween()
+			fade.tween_property(panel, "modulate:a", 0.0, 1.0)
+			fade.tween_callback(panel.queue_free)
+		)
 
 
 # --- Scoreboard ---
@@ -570,7 +613,9 @@ func update_scoreboard() -> void:
 		var alive: bool = slot_idx in gm.alive_players
 
 		var wins: int = NetworkManager.room_scores.get(slot_idx, 0)
-		var wins_str := " x%d" % wins if wins > 0 else ""
+		var wins_str: String = ""
+		if wins > 0:
+			wins_str = " x%d" % wins
 
 		if alive:
 			var dot := ">" if is_me else " "
@@ -642,3 +687,153 @@ func _update_music_ui() -> void:
 func _on_back_to_menu() -> void:
 	NetworkManager.disconnect_from_server()
 	gm.get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+
+
+# --- Debug overlay ---
+
+func on_sync_received() -> void:
+	_sync_count += 1
+	var now := Time.get_ticks_msec() / 1000.0
+	if _last_sync_time > 0.0:
+		var gap := now - _last_sync_time
+		if gap > 0.1:  # >100ms gap = likely dropped packet(s)
+			_sync_gaps += 1
+	_last_sync_time = now
+
+
+func update_debug(delta: float) -> void:
+	_debug_timer += delta
+
+	# Send ping every 3 seconds
+	if not NetworkManager.is_single_player:
+		_perf_ping_timer += delta
+		if _perf_ping_timer >= 3.0:
+			_perf_ping_timer = 0.0
+			NetworkManager.send_ping()
+
+	if _debug_timer < 1.0:
+		return
+	var fps: float = float(Engine.get_frames_per_second())
+	var sync_rate: float = float(_sync_count) / _debug_timer
+	var gaps: int = _sync_gaps
+	_sync_count = 0
+	_sync_gaps = 0
+	_debug_timer = 0.0
+	if _perf_renderer.is_empty():
+		_perf_renderer = RenderingServer.get_video_adapter_name()
+
+	var draw_calls: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+	var mem_mb: float = float(Performance.get_monitor(Performance.MEMORY_STATIC)) / 1048576.0
+	var ping_ms: float = NetworkManager.client_ping_ms
+	
+	# Memory delta (allocation rate)
+	_mem_delta_mb = mem_mb - _prev_mem_mb
+	_prev_mem_mb = mem_mb
+
+	# Object count & delta (node allocations)
+	var tree := _get_tree()
+	var obj_count := tree.get_node_count() if tree else 0
+	_obj_delta = obj_count - _prev_obj_count
+	_prev_obj_count = obj_count
+	
+	# Track allocation spikes (frames with high node creation)
+	if _obj_delta > 5:
+		_alloc_spike_count += 1
+	
+	# Count active effects (bursts, powerup visuals)
+	var active_bursts := 0
+	if tree and tree.has_group("bursts"):
+		active_bursts = tree.get_node_count_in_group("bursts")
+
+	var debug_line: String = "%d FPS | sync %.0f/s" % [int(fps), sync_rate]
+	if gaps > 0:
+		debug_line += " | gaps %d!" % gaps
+	if ping_ms >= 0.0:
+		debug_line += " | ping %.0fms" % ping_ms
+	debug_line += " | draw %d | mem %.0fMB" % [draw_calls, mem_mb]
+	
+	# Add memory delta (positive = allocating, negative = GC freeing)
+	if _mem_delta_mb > 0.1:
+		debug_line += " (+%.2f)" % _mem_delta_mb
+	elif _mem_delta_mb < -0.1:
+		debug_line += " (-%.2f)" % -_mem_delta_mb
+	
+	# Add object count delta (allocations per second)
+	if _obj_delta > 0:
+		debug_line += " | obj +%d" % _obj_delta
+	elif _obj_delta < 0:
+		debug_line += " | obj %d" % _obj_delta
+	
+	# Add active effects count
+	if active_bursts > 0:
+		debug_line += " | bursts %d" % active_bursts
+	
+	# Add frame timing (from game_manager)
+	var frame_time: float = gm._last_frame_time if gm.has_method("_process") else 0.0
+	if frame_time > 0:
+		debug_line += " | frame %.1fms" % frame_time
+		if frame_time > 16:
+			debug_line += "!"
+		if frame_time > 50:
+			debug_line += "!!"
+	
+	# Add allocation spike warning
+	if _alloc_spike_count > 0:
+		debug_line += " | spikes %d!" % _alloc_spike_count
+
+	if _debug_label != null:
+		_debug_label.text = debug_line
+
+		# Color code: green=good, yellow=warning, red=bad
+		if fps < 30 or (ping_ms > 150 and ping_ms >= 0.0) or gaps > 2 or _alloc_spike_count > 3:
+			_debug_label.add_theme_color_override("font_color", Color(1, 0.4, 0.3, 0.9))
+		elif fps < 50 or (ping_ms > 80 and ping_ms >= 0.0) or gaps > 0 or _alloc_spike_count > 0:
+			_debug_label.add_theme_color_override("font_color", Color(1, 0.85, 0.3, 0.9))
+		else:
+			_debug_label.add_theme_color_override("font_color", Color(0.7, 1, 0.7, 0.9))
+
+	# Print to console every 5 seconds (not every 1s to avoid spam)
+	_perf_sample_count += 1
+	if _perf_sample_count % 5 == 0:
+		print("[PERF] %s | %s" % [debug_line, _perf_renderer])
+	
+	# Log allocation spikes for debugging
+	if _obj_delta > 10:
+		print("[PERF] ALLOC SPIKE: +%d nodes, +%.2f MB memory" % [_obj_delta, _mem_delta_mb])
+
+	# Accumulate for server report
+	_perf_fps_sum += fps
+	_perf_sync_sum += sync_rate
+	if ping_ms >= 0.0:
+		_perf_ping_sum += ping_ms
+	if fps < _perf_fps_min:
+		_perf_fps_min = fps
+
+	# Reset allocation spike counter every 10 seconds
+	_perf_sample_count += 1
+	if _perf_sample_count % 10 == 0:
+		_alloc_spike_count = 0
+	
+	# Send summary to server every 30s
+	if not NetworkManager.is_single_player:
+		_perf_report_timer += 1.0
+		if _perf_report_timer >= 30.0 and _perf_sample_count > 0:
+			_perf_report_timer = 0.0
+			_send_perf_report()
+
+
+func _send_perf_report() -> void:
+	var count: float = maxf(float(_perf_sample_count), 1.0)
+	var avg_ping: float = _perf_ping_sum / count
+	var fps_avg: float = _perf_fps_sum / count
+	var sync_avg: float = _perf_sync_sum / count
+	var report := "%s|%.0f|%.0f|%.0f|%.0f" % [
+		_perf_renderer, fps_avg, _perf_fps_min, sync_avg, avg_ping]
+	print("[PERF] Sending report to server: fps_avg=%.0f fps_min=%.0f sync=%.0f/s ping=%.0fms" % [
+		fps_avg, _perf_fps_min, sync_avg, avg_ping])
+	_perf_fps_sum = 0.0
+	_perf_fps_min = 9999.0
+	_perf_sync_sum = 0.0
+	_perf_ping_sum = 0.0
+	_perf_sample_count = 0
+	NetworkManager._rpc_client_perf_report.rpc_id(1, report)

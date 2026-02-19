@@ -14,9 +14,10 @@ var dots_mesh: ImmediateMesh
 var dots_mat: StandardMaterial3D
 
 # Enemy aim indicators
-var enemy_lines: Dictionary = {}   # slot -> MeshInstance3D
-var enemy_meshes: Dictionary = {}  # slot -> ImmediateMesh
-var enemy_data: Dictionary = {}    # slot -> { "dir": Vector3, "power": float }
+var enemy_lines: Dictionary = {}         # slot -> MeshInstance3D
+var enemy_meshes: Dictionary = {}        # slot -> ImmediateMesh
+var enemy_data: Dictionary = {}          # slot -> { "dir": Vector3, "power": float }
+var _last_enemy_render: Dictionary = {}  # slot -> { "dir": Vector3, "power": float, "pos": Vector3 }
 
 var broadcast_timer: float = 0.0
 const BROADCAST_INTERVAL := 0.05  # 20Hz aim updates
@@ -183,10 +184,12 @@ func on_aim_received(slot: int, direction: Vector3, power: float) -> void:
 func update_enemy_lines() -> void:
 	var my_slot := NetworkManager.my_slot
 
-	# Hide lines for slots no longer aiming
+	# Hide lines for slots no longer aiming; clear cached state so they rebuild on next show
 	for slot: int in enemy_lines:
 		if slot not in enemy_data:
-			enemy_lines[slot].visible = false
+			if enemy_lines[slot].visible:
+				enemy_lines[slot].visible = false
+				_last_enemy_render.erase(slot)
 
 	# Draw lines for enemies currently aiming
 	for slot: int in enemy_data:
@@ -198,12 +201,22 @@ func update_enemy_lines() -> void:
 		var data: Dictionary = enemy_data[slot]
 		var dir: Vector3 = data["dir"]
 		var power: float = data["power"]
+		var ball_pos: Vector3 = gm.balls[slot].global_position
+
+		# Skip rebuild if dir/power/position are all unchanged since last frame
+		var last: Dictionary = _last_enemy_render.get(slot, {})
+		if not last.is_empty() \
+				and last["dir"] == dir \
+				and last["power"] == power \
+				and last["pos"].distance_squared_to(ball_pos) < 0.0001:
+			continue
+
+		_last_enemy_render[slot] = {"dir": dir, "power": power, "pos": ball_pos}
 
 		var line := get_or_create_enemy_line(slot)
 		line.visible = true
 		var im: ImmediateMesh = enemy_meshes[slot]
 
-		var ball_pos: Vector3 = gm.balls[slot].global_position
 		var start := ball_pos + Vector3(0, 0.05, 0)
 		var line_length := 1.0 + power * 3.5
 		var end: Vector3 = start + dir * line_length

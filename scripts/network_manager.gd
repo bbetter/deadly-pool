@@ -135,6 +135,7 @@ func _start_dedicated_server() -> void:
 			port = int(args[i].split("=")[1])
 
 	var peer := WebSocketMultiplayerPeer.new()
+	peer.inbound_buffer_size = 1048576  # 1MB
 	var err := peer.create_server(port)
 	if err != OK:
 		print("[SERVER] Failed to create WebSocket server on port %d: %s" % [port, error_string(err)])
@@ -154,6 +155,7 @@ func _start_dedicated_server() -> void:
 func connect_to_server(ip: String, player_name: String) -> void:
 	my_name = player_name
 	var peer := WebSocketMultiplayerPeer.new()
+	peer.inbound_buffer_size = 1048576  # 1MB — prevent "Buffer payload full" drops
 	# Build WebSocket URL from ip/hostname
 	var url: String
 	if ip.begins_with("ws://") or ip.begins_with("wss://"):
@@ -756,6 +758,47 @@ func _rpc_game_send_aim(slot: int, direction: Vector3, power: float) -> void:
 		gm.server_handle_send_aim(sender, slot, direction, power)
 
 
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_client_perf_report(report: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var room_code: String = players[sender].get("room", "???") if sender in players else "???"
+	var pname: String = players[sender].get("name", "???") if sender in players else "???"
+	var parts := report.split("|")
+	if parts.size() >= 5:
+		room_log(room_code, "CLIENT_PERF [%s] peer=%d fps_avg=%s fps_min=%s sync=%s/s ping=%sms gpu=%s" % [
+			pname, sender, parts[1], parts[2], parts[3], parts[4], parts[0]])
+	elif parts.size() >= 4:
+		room_log(room_code, "CLIENT_PERF [%s] peer=%d fps_avg=%s fps_min=%s sync=%s/s gpu=%s" % [
+			pname, sender, parts[1], parts[2], parts[3], parts[0]])
+
+
+# --- Ping system ---
+
+var client_ping_ms: float = -1.0
+var _ping_send_time: float = 0.0
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_ping(client_time: float) -> void:
+	# Server receives ping, echoes back
+	if multiplayer.is_server():
+		var sender := multiplayer.get_remote_sender_id()
+		_rpc_pong.rpc_id(sender, client_time)
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_pong(client_time: float) -> void:
+	# Client receives pong, calculates RTT
+	if not multiplayer.is_server():
+		var now := Time.get_ticks_msec() / 1000.0
+		client_ping_ms = (now - client_time) * 1000.0
+
+func send_ping() -> void:
+	if multiplayer.is_server() or not multiplayer.has_multiplayer_peer():
+		return
+	_rpc_ping.rpc_id(1, Time.get_ticks_msec() / 1000.0)
+
+
 # --- Server -> Client game RPCs ---
 
 @rpc("authority", "call_remote", "reliable")
@@ -766,10 +809,10 @@ func _rpc_game_spawn_balls(spawn_data: Array[Dictionary], alive: Array[int]) -> 
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
-func _rpc_game_sync_state(positions: PackedVector3Array, rotations: PackedVector3Array, lin_vels: PackedVector3Array, ang_vels: PackedVector3Array) -> void:
+func _rpc_game_sync_state(positions: PackedVector3Array, rotations: PackedVector3Array, lin_vels: PackedVector3Array) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
-		gm.client_receive_state(positions, rotations, lin_vels, ang_vels)
+		gm.client_receive_state(positions, rotations, lin_vels)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -890,3 +933,10 @@ func _rpc_game_receive_aim(slot: int, direction: Vector3, power: float) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
 		gm.client_receive_aim(slot, direction, power)
+
+
+@rpc("authority", "call_remote", "unreliable")
+func _rpc_game_collision_effect(pos: Vector3, color: Color, intensity: float, sound_slot: int, is_wall: bool, sound_speed: float) -> void:
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_collision_effect(pos, color, intensity, sound_slot, is_wall, sound_speed)
