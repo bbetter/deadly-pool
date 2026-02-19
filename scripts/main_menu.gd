@@ -56,12 +56,17 @@ var _auto_join: String = ""
 var _auto_start: bool = false
 
 func _ready() -> void:
+	print("[MENU] Deadly Pool loaded. Renderer: %s | OS: %s" % [RenderingServer.get_video_adapter_name(), OS.get_name()])
 	if NetworkManager.is_server_mode:
 		return
 
 	_build_ui()
 	_build_music_controls()
 	_show_main_panel()
+
+	# Web exports need paste handled via JavaScript clipboard API
+	if OS.get_name() == "Web":
+		_setup_web_paste()
 
 	NetworkManager.player_connected.connect(_on_server_connected)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
@@ -817,3 +822,32 @@ func _update_music_ui() -> void:
 	var muted := MusicManager.is_muted()
 	_music_vol_down_btn.disabled = muted
 	_music_vol_up_btn.disabled = muted
+
+
+# --- Web clipboard paste support ---
+
+func _setup_web_paste() -> void:
+	JavaScriptBridge.eval("""
+		window._godotPasteText = '';
+		document.addEventListener('paste', function(e) {
+			var text = (e.clipboardData || window.clipboardData).getData('text');
+			if (text) window._godotPasteText = text;
+		});
+	""", true)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	# Handle Ctrl+V paste on web — read from JS paste listener
+	if OS.get_name() == "Web" and event is InputEventKey:
+		var key := event as InputEventKey
+		if key.pressed and key.keycode == KEY_V and key.ctrl_pressed:
+			var text: String = JavaScriptBridge.eval("window._godotPasteText || ''", true)
+			if not text.is_empty():
+				JavaScriptBridge.eval("window._godotPasteText = ''", true)
+				var focused := get_viewport().gui_get_focus_owner()
+				if focused is LineEdit:
+					var le := focused as LineEdit
+					var pos := le.caret_column
+					le.text = le.text.substr(0, pos) + text + le.text.substr(pos)
+					le.caret_column = pos + text.length()
+					le.text_changed.emit(le.text)

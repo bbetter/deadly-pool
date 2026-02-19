@@ -36,6 +36,9 @@ common/physics_interpolation=true
 
 [rendering]
 
+renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="gl_compatibility"
+renderer/rendering_method.web="gl_compatibility"
 anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/msaa_3d.web=0
 environment/defaults/default_clear_color=Color(0.05, 0.05, 0.1, 1)

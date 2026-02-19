@@ -4,7 +4,8 @@ const BALL_SCENE := preload("res://scenes/pool_ball.tscn")
 const PLAYER_COUNT := 4
 const FALL_THRESHOLD := -2.0
 const INVALID_POS := Vector3(INF, INF, INF)
-const SYNC_INTERVAL := 1.0 / 60.0  # 60Hz state broadcast
+const SYNC_INTERVAL := 1.0 / 30.0       # 30Hz while balls are moving
+const SYNC_IDLE_INTERVAL := 1.0         # 1Hz keepalive when all balls stopped
 
 # Pocket detection (matches arena.gd layout)
 const CORNER_POCKET_RADIUS := 1.3
@@ -58,6 +59,11 @@ var _server_collision_pairs_phys: Dictionary = {}  # "i_j" -> bool (server-side 
 var _physics_log_timer: float = 0.0
 const PHYSICS_LOG_INTERVAL := 0.5  # Log ball states every 0.5s
 
+var _pickup_timer: float = 0.0
+const PICKUP_CHECK_INTERVAL := 0.05  # 20Hz — generous for pickup radius detection
+
+var _any_ball_moving: bool = false  # Motion gate: skip broadcast when all balls stopped
+
 var _is_server: bool = false
 var _is_headless: bool = false
 var _bot_ai: Node
@@ -75,6 +81,11 @@ var _perf_tick_timer: float = 0.0
 var _perf_tick_durations: Array[float] = []
 var _room_start_time: int = 0  # For room duration logging
 
+# Frame timing debug (client-side)
+var _frame_time_samples: Array[float] = []
+var _frame_time_spike_count: int = 0
+var _last_frame_time: float = 0.0
+
 @onready var balls_container: Node3D = $Balls
 @onready var hud: CanvasLayer = $HUD
 @onready var camera: Camera3D = $CameraRig/Camera3D
@@ -85,6 +96,7 @@ func _log(msg: String) -> void:
 
 
 func _ready() -> void:
+	print("[GAME] _ready() started, renderer: %s" % RenderingServer.get_video_adapter_name())
 	if NetworkManager.is_single_player:
 		_is_server = true
 		_is_headless = false
@@ -98,6 +110,8 @@ func _ready() -> void:
 		else:
 			# Client: use NetworkManager.current_room as before
 			_room_code = NetworkManager.current_room
+
+	print("[GAME] mode: headless=%s server=%s single=%s room=%s" % [_is_headless, _is_server, NetworkManager.is_single_player, _room_code])
 
 	powerup_system = PowerupSystem.new(self)
 	game_hud = GameHUD.new(self)
@@ -251,12 +265,13 @@ func client_receive_spawn_balls(spawn_data: Array[Dictionary], alive: Array[int]
 	game_hud.build_scoreboard()
 
 
-func client_receive_state(positions: PackedVector3Array, rotations: PackedVector3Array, lin_vels: PackedVector3Array, ang_vels: PackedVector3Array) -> void:
+func client_receive_state(positions: PackedVector3Array, rotations: PackedVector3Array, lin_vels: PackedVector3Array) -> void:
 	_last_sync_time = Time.get_ticks_msec() / 1000.0
+	game_hud.on_sync_received()
 	for i in mini(balls.size(), positions.size()):
 		var ball := balls[i]
 		if ball != null and ball.is_alive:
-			ball.receive_state(positions[i], rotations[i], lin_vels[i], ang_vels[i])
+			ball.receive_state(positions[i], rotations[i], lin_vels[i])
 
 
 func client_receive_ball_pocketed(slot: int, pocket_pos: Vector3) -> void:
@@ -344,6 +359,19 @@ func client_receive_aim(slot: int, direction: Vector3, power: float) -> void:
 	aim_visuals.on_aim_received(slot, direction, power)
 
 
+func client_receive_collision_effect(pos: Vector3, color: Color, intensity: float, sound_slot: int, is_wall: bool, sound_speed: float) -> void:
+	if _is_headless:
+		return
+	var burst := ComicBurst.create(pos, color, intensity)
+	add_child(burst)
+	if sound_slot >= 0 and sound_slot < balls.size() and balls[sound_slot] != null:
+		var ball := balls[sound_slot]
+		if is_wall:
+			ball.play_hit_wall_sound(sound_speed)
+		else:
+			ball.play_hit_ball_sound(sound_speed)
+
+
 # --- Ball spawning ---
 
 func _server_start_countdown() -> void:
@@ -416,6 +444,9 @@ func _server_spawn_balls() -> void:
 
 		# Apply physics from config
 		_apply_ball_physics(ball)
+
+		# Apply visuals after _ready has run
+		ball.apply_setup(slot_idx + 1, player_colors[slot_idx])
 
 		spawn_data.append({
 			"slot": slot_idx,
@@ -514,7 +545,10 @@ func _physics_process(delta: float) -> void:
 		var tick_start := Time.get_ticks_usec()
 
 		_server_check_fallen_balls(delta)
-		powerup_system.server_check_pickups()
+		_pickup_timer += delta
+		if _pickup_timer >= PICKUP_CHECK_INTERVAL:
+			_pickup_timer = 0.0
+			powerup_system.server_check_pickups()
 		_server_check_ball_collisions()
 
 		# Tick down launch cooldowns
@@ -527,8 +561,24 @@ func _physics_process(delta: float) -> void:
 		powerup_system.server_tick(delta)
 
 		if not NetworkManager.is_single_player:
+			# Motion gate: track whether any ball is still moving
+			var was_moving := _any_ball_moving
+			_any_ball_moving = false
+			for ball in balls:
+				if ball != null and ball.is_alive and not ball.is_pocketing \
+						and ball.linear_velocity.length_squared() > 0.0001:
+					_any_ball_moving = true
+					break
+
+			# When motion stops, immediately send final positions so clients snap to rest
+			if was_moving and not _any_ball_moving:
+				_server_broadcast_state()
+				_sync_timer = 0.0
+
+			# Broadcast at 30Hz while moving, 1Hz idle keepalive when stopped
 			_sync_timer += delta
-			if _sync_timer >= SYNC_INTERVAL:
+			var effective_interval := SYNC_INTERVAL if _any_ball_moving else SYNC_IDLE_INTERVAL
+			if _sync_timer >= effective_interval:
 				_sync_timer = 0.0
 				_server_broadcast_state()
 
@@ -568,8 +618,10 @@ func _physics_process(delta: float) -> void:
 					avg_tick = _perf_tick_durations.reduce(func(a, b): return a + b) / _perf_tick_durations.size()
 					max_tick = _perf_tick_durations.max()
 				var tick_rate := float(_perf_tick_count) / _perf_tick_timer
-				_log("PERF ticks=%d avg=%.2fms max=%.2fms rate=%.1fHz" % [
-					_perf_tick_count, avg_tick, max_tick, tick_rate])
+				var mem_mb: float = float(Performance.get_monitor(Performance.MEMORY_STATIC)) / 1048576.0
+				var peers: int = multiplayer.get_peers().size() if multiplayer.has_multiplayer_peer() else 0
+				_log("PERF ticks=%d avg=%.2fms max=%.2fms rate=%.1fHz peers=%d mem=%.0fMB" % [
+					_perf_tick_count, avg_tick, max_tick, tick_rate, peers, mem_mb])
 				_perf_tick_count = 0
 				_perf_tick_timer = 0.0
 				_perf_tick_durations.clear()
@@ -577,10 +629,10 @@ func _physics_process(delta: float) -> void:
 
 func _server_broadcast_state() -> void:
 	# Pack all ball states into arrays for efficient transfer
+	# ang_vel omitted: clients store but never read it for rendering
 	var positions := PackedVector3Array()
 	var rotations := PackedVector3Array()
 	var lin_vels := PackedVector3Array()
-	var ang_vels := PackedVector3Array()
 
 	for ball in balls:
 		if ball != null and ball.is_alive and not ball.is_pocketing:
@@ -588,15 +640,13 @@ func _server_broadcast_state() -> void:
 			positions.append(ball.position)
 			rotations.append(ball.rotation)
 			lin_vels.append(ball.linear_velocity)
-			ang_vels.append(ball.angular_velocity)
 		else:
 			positions.append(Vector3.ZERO)
 			rotations.append(Vector3.ZERO)
 			lin_vels.append(Vector3.ZERO)
-			ang_vels.append(Vector3.ZERO)
 
 	for pid in NetworkManager.get_room_peers(_room_code):
-		NetworkManager._rpc_game_sync_state.rpc_id(pid, positions, rotations, lin_vels, ang_vels)
+		NetworkManager._rpc_game_sync_state.rpc_id(pid, positions, rotations, lin_vels)
 
 
 # --- Input (client-only) ---
@@ -1001,6 +1051,8 @@ func _reset_round_state() -> void:
 	_collision_pairs.clear()
 	_wall_collision.clear()
 	_server_collision_pairs_phys.clear()
+	_pickup_timer = 0.0
+	_any_ball_moving = false
 
 	# Reset powerups
 	powerup_system.reset()
@@ -1068,6 +1120,30 @@ func _server_check_ball_collisions() -> void:
 
 			_server_collision_pairs_phys[key] = is_touching
 
+	# Ball-to-wall collisions (server-side, for broadcast to clients)
+	var wall_limit := WALL_HALF - BALL_RADIUS - 0.05
+	for i in count:
+		var ball := balls[i]
+		if ball == null or not ball.is_alive or ball.is_pocketing:
+			continue
+		var pos := ball.position
+		var near_wall := absf(pos.x) > wall_limit or absf(pos.z) > wall_limit
+		var wall_key := "w%d" % i
+		var was_near: bool = _server_collision_pairs_phys.get(wall_key, false)
+		if near_wall and not was_near:
+			var speed := ball.linear_velocity.length()
+			if speed > 1.0 and not NetworkManager.is_single_player:
+				var intensity := clampf(speed / 8.0, 0.0, 1.0) * 0.5
+				var burst_pos := ball.position
+				if absf(pos.x) > wall_limit:
+					burst_pos.x = signf(pos.x) * WALL_HALF
+				if absf(pos.z) > wall_limit:
+					burst_pos.z = signf(pos.z) * WALL_HALF
+				burst_pos.y = 0.4
+				for pid in NetworkManager.get_room_peers(_room_code):
+					NetworkManager._rpc_game_collision_effect.rpc_id(pid, burst_pos, Color(1.0, 0.9, 0.7), intensity, ball.slot, true, speed)
+		_server_collision_pairs_phys[wall_key] = near_wall
+
 
 func _on_server_ball_collision(a: PoolBall, b: PoolBall) -> void:
 	# Log collision details
@@ -1096,11 +1172,29 @@ func _on_server_ball_collision(a: PoolBall, b: PoolBall) -> void:
 
 	# Normal collision continues...
 
+	# Broadcast visual/audio effect to all clients
+	if not NetworkManager.is_single_player and rel_vel >= 0.5:
+		var intensity := clampf(rel_vel / 10.0, 0.0, 1.0)
+		var mid := a.position.lerp(b.position, 0.5)
+		mid.y = 0.5
+		var burst_color := a.ball_color.lerp(b.ball_color, 0.5)
+		var faster_slot := a.slot if a.linear_velocity.length() >= b.linear_velocity.length() else b.slot
+		for pid in NetworkManager.get_room_peers(_room_code):
+			NetworkManager._rpc_game_collision_effect.rpc_id(pid, mid, burst_color, intensity, faster_slot, false, rel_vel)
+
 
 # --- Client-side updates ---
 
 func _process(delta: float) -> void:
-	if _is_headless or game_over:
+	if _is_headless:
+		return
+
+	# Frame timing: measure how long this frame takes
+	var frame_start := Time.get_ticks_usec()
+
+	game_hud.update_debug(delta)
+
+	if game_over:
 		return
 
 	# Client-side: detect server timeout (not in single-player)
@@ -1129,9 +1223,24 @@ func _process(delta: float) -> void:
 	if not NetworkManager.is_single_player:
 		aim_visuals.update_enemy_lines()
 
-	# Client-side collision detection for comic burst effects and sounds
-	if not _is_server or NetworkManager.is_single_player:
+	# Collision detection for comic burst effects and sounds.
+	# In multiplayer, the server detects and broadcasts via RPC (Fix 1).
+	# In single-player, detect locally (no networking needed).
+	if NetworkManager.is_single_player:
 		_detect_ball_collisions()
+
+	# Frame timing: calculate frame duration and track spikes
+	var frame_time_ms := (Time.get_ticks_usec() - frame_start) / 1000.0  # Convert to ms
+	_last_frame_time = frame_time_ms
+	_frame_time_samples.append(frame_time_ms)
+	if _frame_time_samples.size() > 60:
+		_frame_time_samples.remove_at(0)
+	
+	# Track frames that took >16ms (60 FPS target)
+	if frame_time_ms > 16.0:
+		_frame_time_spike_count += 1
+		if frame_time_ms > 50:  # Major spike
+			print("[PERF] FRAME SPIKE: %.2fms" % frame_time_ms)
 
 
 func _detect_ball_collisions() -> void:
@@ -1162,7 +1271,7 @@ func _detect_ball_collisions() -> void:
 				var mid := a.global_position.lerp(b.global_position, 0.5)
 				mid.y = 0.5
 				var burst_color := a.ball_color.lerp(b.ball_color, 0.5)
-				var burst := ComicBurst.create(mid, burst_color, intensity, intensity > 0.15)
+				var burst := ComicBurst.create(mid, burst_color, intensity)
 				add_child(burst)
 				# Play hit sound on the faster-moving ball
 				var faster_ball: PoolBall = a if a.synced_velocity.length() >= b.synced_velocity.length() else b
@@ -1192,7 +1301,7 @@ func _detect_ball_collisions() -> void:
 				if absf(pos.z) > wall_limit:
 					burst_pos.z = signf(pos.z) * WALL_HALF
 				burst_pos.y = 0.4
-				var burst := ComicBurst.create(burst_pos, Color(1.0, 0.9, 0.7), intensity * 0.5, false)
+				var burst := ComicBurst.create(burst_pos, Color(1.0, 0.9, 0.7), intensity * 0.5)
 				add_child(burst)
 				ball.play_hit_wall_sound(speed)
 
