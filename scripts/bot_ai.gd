@@ -4,6 +4,8 @@ var game_manager: Node  # Reference to GameManager
 var bot_slots: Array[int] = []
 var _bot_timers: Dictionary = {}  # slot -> float (countdown to next shot)
 var _bot_shot_count: Dictionary = {}  # slot -> int (for tracking bot activity)
+var _bot_aim: Dictionary = {}          # slot -> {dir, power, target_slot} — pre-computed on ball stop
+var _bot_aim_broadcast_timers: Dictionary = {}  # slot -> float, for rate-limiting RPC aim broadcasts
 
 func setup(gm: Node, slots: Array[int]) -> void:
 	game_manager = gm
@@ -27,37 +29,57 @@ func _process(delta: float) -> void:
 		# Wait for ball to stop before aiming
 		if ball.is_moving():
 			_bot_timers[slot] = randf_range(GameConfig.bot_min_delay, GameConfig.bot_max_delay)
+			_clear_aim(slot)
 			continue
 
 		# Auto-arm any held powerup (bots always arm immediately)
-		if ball.held_powerup != Powerup.Type.NONE:
-			if ball.held_powerup == Powerup.Type.SPEED_BOOST and not ball.speed_boost_armed:
-				ball.speed_boost_armed = true
-				ball.armed_timer = GameConfig.powerup_armed_timeout
-				ball.update_powerup_icon()
-			elif ball.held_powerup == Powerup.Type.BOMB and not ball.bomb_armed:
-				ball.bomb_armed = true
-				ball.armed_timer = GameConfig.powerup_armed_timeout
-				ball.update_powerup_icon()
-			elif ball.held_powerup == Powerup.Type.SHIELD and not ball.shield_active:
-				ball.shield_active = true
-				ball.shield_timer = GameConfig.shield_duration
-				ball.mass = GameConfig.shield_mass
-				ball.armed_timer = GameConfig.powerup_armed_timeout
-				ball.update_powerup_icon()
+		if ball.held_powerup != Powerup.Type.NONE and not ball.powerup_armed:
+			ball.powerup_armed = true
+			ball.armed_timer = GameConfig.powerup_armed_timeout
+			if ball.held_powerup == Powerup.Type.FREEZE:
+				ball.freeze_timer = GameConfig.freeze_duration
+				ball.linear_velocity = Vector3.ZERO
+				ball.angular_velocity = Vector3.ZERO
+				ball.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+				ball.freeze = true
+			if NetworkManager.is_single_player:
+				game_manager.powerup_system.on_powerup_armed(slot, ball.held_powerup)
+			else:
+				for pid in NetworkManager.get_room_peers(game_manager._room_code):
+					NetworkManager._rpc_game_powerup_armed.rpc_id(pid, slot, ball.held_powerup)
+
+		# Pre-compute aim the moment ball stops so aim line shows during full countdown
+		if slot not in _bot_aim:
+			_compute_bot_aim(slot, ball)
+
+		# Feed aim into the aim line system
+		if slot in _bot_aim:
+			var aim: Dictionary = _bot_aim[slot]
+			var power_ratio: float = aim["power"] / ball.max_power
+			if game_manager._is_headless:
+				# Multiplayer: server broadcasts bot aim to clients via the same RPC used for
+				# human player aim relaying, rate-limited to BROADCAST_INTERVAL
+				_bot_aim_broadcast_timers[slot] = _bot_aim_broadcast_timers.get(slot, 0.0) - delta
+				if _bot_aim_broadcast_timers[slot] <= 0.0:
+					_bot_aim_broadcast_timers[slot] = AimVisuals.BROADCAST_INTERVAL
+					for pid in NetworkManager.get_room_peers(game_manager._room_code):
+						if pid > 0:
+							NetworkManager._rpc_game_receive_aim.rpc_id(pid, slot, aim["dir"], power_ratio)
+			else:
+				# Single-player: inject directly into local aim_visuals
+				game_manager.aim_visuals.on_aim_received(slot, aim["dir"], power_ratio)
 
 		_bot_timers[slot] -= delta
 		if _bot_timers[slot] > 0.0:
 			continue
 
-		# Time to shoot — pick a target and launch
+		# Timer expired — fire with pre-computed aim
 		_bot_timers[slot] = randf_range(GameConfig.bot_min_delay, GameConfig.bot_max_delay)
 		_bot_shot_count[slot] += 1
 		_bot_shoot(slot, ball)
 
 
-func _bot_shoot(slot: int, ball: PoolBall) -> void:
-	# Pick a target using smart targeting if enabled
+func _compute_bot_aim(slot: int, ball: PoolBall) -> void:
 	var targets: Array[PoolBall] = []
 	for other in game_manager.balls:
 		if other == null or other == ball or not other.is_alive or other.is_pocketing:
@@ -65,39 +87,53 @@ func _bot_shoot(slot: int, ball: PoolBall) -> void:
 		targets.append(other)
 
 	if targets.is_empty():
-		_log("BOT_SHOOT slot=%d NO_TARGETS" % slot)
 		return
 
 	var target: PoolBall = _select_best_target(ball, targets)
 
-	# Direction toward target (use position for server-side)
 	var dir := (target.position - ball.position)
 	dir.y = 0.0
 	var distance := dir.length()
 	if distance < 0.01:
-		_log("BOT_SHOOT slot=%d target=%d TOO_CLOSE" % [slot, target.slot])
 		return
 	dir = dir.normalized()
 
-	# Calculate scatter based on distance - closer = more accurate, farther = more scatter
 	var scatter_multiplier := _calculate_scatter_multiplier(distance)
 	var scatter_angle := randf_range(-GameConfig.bot_scatter_angle, GameConfig.bot_scatter_angle) * scatter_multiplier
 	dir = dir.rotated(Vector3.UP, scatter_angle)
 
-	# Calculate power based on distance - ensure enough power to reach target
 	var power := _calculate_power(ball, distance)
 
+	_bot_aim[slot] = {"dir": dir, "power": power, "target_slot": target.slot}
+
+
+func _bot_shoot(slot: int, ball: PoolBall) -> void:
+	if slot not in _bot_aim:
+		_log("BOT_SHOOT slot=%d NO_AIM_DATA" % slot)
+		return
+
+	var aim: Dictionary = _bot_aim[slot]
+	var dir: Vector3 = aim["dir"]
+	var power: float = aim["power"]
+
+	_clear_aim(slot)
 	game_manager._execute_launch(slot, dir, power)
 
-	# Build targets string manually (GDScript has no Array.join())
-	var targets_str := ""
-	for i in range(targets.size()):
-		if i > 0: targets_str += ","
-		targets_str += str(targets[i].slot)
+	_log("BOT_SHOOT slot=%d shot=%d target=%d power=%.1f" % [
+		slot, _bot_shot_count[slot], aim.get("target_slot", -1), power])
 
-	_log("BOT_DECIDE slot=%d shot=%d targets=[%s] chosen=%d dist=%.2f scatter_mult=%.2f power=%.1f" % [
-		slot, _bot_shot_count[slot], targets_str,
-		target.slot, distance, scatter_multiplier, power])
+
+func _clear_aim(slot: int) -> void:
+	if slot not in _bot_aim:
+		return
+	_bot_aim.erase(slot)
+	_bot_aim_broadcast_timers.erase(slot)
+	if game_manager._is_headless:
+		for pid in NetworkManager.get_room_peers(game_manager._room_code):
+			if pid > 0:
+				NetworkManager._rpc_game_receive_aim.rpc_id(pid, slot, Vector3.ZERO, 0.0)
+	else:
+		game_manager.aim_visuals.on_aim_received(slot, Vector3.ZERO, 0.0)
 
 
 func _select_best_target(ball: PoolBall, targets: Array[PoolBall]) -> PoolBall:

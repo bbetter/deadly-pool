@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
+MODE="--export-release"
+[ "${DEBUG_BUILD}" = "true" ] && MODE="--export-debug"
+OUT="${EXPORT_OUT:-export/deadly-pool.exe}"
 mkdir -p export
-~/Завантажене/Godot_v4.6-stable_linux.x86_64 --headless --export-release "Windows" "export/deadly-pool.exe"
-rm -f export/deadly-pool.console.exe
-echo "Done: $(du -h export/deadly-pool.exe | cut -f1) -> export/deadly-pool.exe"
+~/Завантажене/Godot_v4.6-stable_linux.x86_64 --headless $MODE "Windows" "$OUT"
+rm -f "${OUT%.exe}.console.exe"
+echo "Done: $(du -h "$OUT" | cut -f1) -> $OUT"

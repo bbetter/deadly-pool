@@ -19,6 +19,12 @@ var create_button: Button
 var join_button: Button
 var online_status: Label
 
+# Rooms browser panel
+var rooms_panel: VBoxContainer
+var _rooms_list: VBoxContainer
+var _rooms_status: Label
+var _rooms_refresh_btn: Button
+
 # Connect panel (room code entry)
 var code_input: LineEdit
 var action_button: Button
@@ -73,6 +79,7 @@ func _ready() -> void:
 	NetworkManager.room_created.connect(_on_room_created)
 	NetworkManager.room_joined.connect(_on_room_joined)
 	NetworkManager.room_join_failed.connect(_on_room_join_failed)
+	NetworkManager.rooms_list_received.connect(_on_rooms_list_received)
 	NetworkManager.lobby_updated.connect(_on_lobby_updated)
 	NetworkManager.countdown_tick.connect(_on_countdown_tick)
 	NetworkManager.game_starting.connect(_on_game_starting)
@@ -118,6 +125,7 @@ func _build_ui() -> void:
 
 	_build_main_panel(root)
 	_build_online_panel(root)
+	_build_rooms_panel(root)
 	_build_connect_panel(root)
 	_build_lobby_panel(root)
 
@@ -277,6 +285,61 @@ func _build_online_panel(root: VBoxContainer) -> void:
 	online_panel.add_child(back_btn)
 
 
+func _build_rooms_panel(root: VBoxContainer) -> void:
+	rooms_panel = VBoxContainer.new()
+	rooms_panel.add_theme_constant_override("separation", 10)
+	rooms_panel.visible = false
+	root.add_child(rooms_panel)
+
+	var header := Label.new()
+	header.text = "OPEN ROOMS"
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_font_size_override("font_size", 24)
+	header.add_theme_color_override("font_color", Color(0.3, 0.9, 1.0))
+	rooms_panel.add_child(header)
+
+	_rooms_status = Label.new()
+	_rooms_status.text = "Loading..."
+	_rooms_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_rooms_status.add_theme_font_size_override("font_size", 14)
+	_rooms_status.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	rooms_panel.add_child(_rooms_status)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 180)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	rooms_panel.add_child(scroll)
+
+	_rooms_list = VBoxContainer.new()
+	_rooms_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_rooms_list.add_theme_constant_override("separation", 6)
+	scroll.add_child(_rooms_list)
+
+	var sep := HSeparator.new()
+	rooms_panel.add_child(sep)
+
+	_rooms_refresh_btn = Button.new()
+	_rooms_refresh_btn.text = "REFRESH"
+	_rooms_refresh_btn.custom_minimum_size = Vector2(0, 40)
+	_rooms_refresh_btn.add_theme_font_size_override("font_size", 16)
+	_rooms_refresh_btn.pressed.connect(_on_rooms_refresh_pressed)
+	rooms_panel.add_child(_rooms_refresh_btn)
+
+	var code_btn := Button.new()
+	code_btn.text = "Enter code manually"
+	code_btn.custom_minimum_size = Vector2(0, 36)
+	code_btn.add_theme_font_size_override("font_size", 15)
+	code_btn.pressed.connect(_show_connect_panel)
+	rooms_panel.add_child(code_btn)
+
+	var back_btn := Button.new()
+	back_btn.text = "BACK"
+	back_btn.custom_minimum_size = Vector2(0, 40)
+	back_btn.add_theme_font_size_override("font_size", 16)
+	back_btn.pressed.connect(_on_rooms_back_pressed)
+	rooms_panel.add_child(back_btn)
+
+
 func _build_connect_panel(root: VBoxContainer) -> void:
 	connect_panel = VBoxContainer.new()
 	connect_panel.add_theme_constant_override("separation", 12)
@@ -402,6 +465,7 @@ func _build_lobby_panel(root: VBoxContainer) -> void:
 func _show_main_panel() -> void:
 	main_panel.visible = true
 	online_panel.visible = false
+	rooms_panel.visible = false
 	connect_panel.visible = false
 	lobby_panel.visible = false
 
@@ -409,6 +473,7 @@ func _show_main_panel() -> void:
 func _show_online_panel() -> void:
 	main_panel.visible = false
 	online_panel.visible = true
+	rooms_panel.visible = false
 	connect_panel.visible = false
 	lobby_panel.visible = false
 	online_status.text = ""
@@ -416,9 +481,18 @@ func _show_online_panel() -> void:
 	join_button.disabled = false
 
 
+func _show_rooms_panel() -> void:
+	main_panel.visible = false
+	online_panel.visible = false
+	rooms_panel.visible = true
+	connect_panel.visible = false
+	lobby_panel.visible = false
+
+
 func _show_connect_panel() -> void:
 	main_panel.visible = false
 	online_panel.visible = false
+	rooms_panel.visible = false
 	connect_panel.visible = true
 	lobby_panel.visible = false
 	code_input.text = ""
@@ -430,6 +504,7 @@ func _show_connect_panel() -> void:
 func _show_lobby_panel() -> void:
 	main_panel.visible = false
 	online_panel.visible = false
+	rooms_panel.visible = false
 	connect_panel.visible = false
 	lobby_panel.visible = true
 	countdown_label.visible = false
@@ -506,8 +581,18 @@ func _on_code_submit() -> void:
 
 
 func _on_connect_back_pressed() -> void:
-	NetworkManager.disconnect_from_server()
-	_show_online_panel()
+	if _is_joining:
+		# Return to room browser without disconnecting
+		_rooms_status.text = "Loading..."
+		_rooms_status.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		_rooms_refresh_btn.disabled = true
+		for child in _rooms_list.get_children():
+			child.queue_free()
+		_show_rooms_panel()
+		NetworkManager.query_rooms()
+	else:
+		NetworkManager.disconnect_from_server()
+		_show_online_panel()
 
 
 func _on_start_pressed() -> void:
@@ -535,11 +620,17 @@ func _on_remove_bot_pressed(peer_id: int) -> void:
 func _on_server_connected(_peer_id: int) -> void:
 	if _is_joining:
 		if not _auto_join.is_empty():
-			# Auto-join: skip the code entry panel, submit directly
+			# Auto-join: skip the browser, submit directly
 			NetworkManager.join_room(_auto_join)
 			online_status.text = "Auto-joining room %s..." % _auto_join
 		else:
-			_show_connect_panel()
+			# Show room browser and fetch available rooms
+			_rooms_status.text = "Loading..."
+			_rooms_refresh_btn.disabled = true
+			for child in _rooms_list.get_children():
+				child.queue_free()
+			_show_rooms_panel()
+			NetworkManager.query_rooms()
 	else:
 		# Creating room - send request immediately
 		NetworkManager.create_room()
@@ -580,11 +671,88 @@ func _on_room_joined(code: String) -> void:
 
 
 func _on_room_join_failed(reason: String) -> void:
+	# If we're on the rooms panel a join failed (e.g. room filled up) — show error there
+	if rooms_panel.visible:
+		_rooms_status.text = reason
+		_rooms_status.add_theme_color_override("font_color", Color(1, 0.3, 0.3))
+		_rooms_refresh_btn.disabled = false
+		return
 	var status_2: Label = connect_panel.get_node("ConnectStatus2")
 	if status_2:
 		status_2.text = reason
 		status_2.add_theme_color_override("font_color", Color(1, 0.3, 0.3))
 	action_button.disabled = false
+
+
+func _on_rooms_list_received(rooms: Array) -> void:
+	if not rooms_panel.visible:
+		return
+	_rooms_refresh_btn.disabled = false
+	for child in _rooms_list.get_children():
+		child.queue_free()
+
+	if rooms.is_empty():
+		_rooms_status.text = "No open rooms — create one!"
+		_rooms_status.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		return
+
+	_rooms_status.text = "%d room(s) available" % rooms.size()
+	_rooms_status.add_theme_color_override("font_color", Color(0.5, 0.9, 0.5))
+
+	for room in rooms:
+		var code: String = room["code"]
+		var human_count: int = room["players"]
+		var bot_count: int = room["bots"]
+		var max_count: int = room["max"]
+		var creator: String = room["creator"]
+
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+
+		var info := Label.new()
+		var bot_str := " +%db" % bot_count if bot_count > 0 else ""
+		info.text = "%s's room  %d%s/%d" % [creator, human_count, bot_str, max_count]
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_theme_font_size_override("font_size", 17)
+		info.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+		row.add_child(info)
+
+		var join_btn := Button.new()
+		join_btn.text = "JOIN"
+		join_btn.custom_minimum_size = Vector2(70, 36)
+		join_btn.add_theme_font_size_override("font_size", 15)
+		var room_code := code  # Capture for lambda
+		join_btn.pressed.connect(func() -> void:
+			_on_room_row_join(room_code)
+		)
+		row.add_child(join_btn)
+		_rooms_list.add_child(row)
+
+
+func _on_room_row_join(code: String) -> void:
+	_rooms_status.text = "Joining %s..." % code
+	_rooms_status.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	# Disable all join buttons while connecting
+	for row in _rooms_list.get_children():
+		for child in row.get_children():
+			if child is Button:
+				child.disabled = true
+	_rooms_refresh_btn.disabled = true
+	NetworkManager.join_room(code)
+
+
+func _on_rooms_refresh_pressed() -> void:
+	_rooms_status.text = "Loading..."
+	_rooms_status.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	_rooms_refresh_btn.disabled = true
+	for child in _rooms_list.get_children():
+		child.queue_free()
+	NetworkManager.query_rooms()
+
+
+func _on_rooms_back_pressed() -> void:
+	NetworkManager.disconnect_from_server()
+	_show_online_panel()
 
 
 func _on_lobby_updated() -> void:

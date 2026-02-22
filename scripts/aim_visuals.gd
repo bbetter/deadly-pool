@@ -33,7 +33,6 @@ func create(parent: Node3D) -> void:
 	bands_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	bands_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	bands_mat.vertex_color_use_as_albedo = true
-	bands_mat.no_depth_test = true
 
 	bands_mesh = ImmediateMesh.new()
 	bands_node = MeshInstance3D.new()
@@ -47,7 +46,6 @@ func create(parent: Node3D) -> void:
 	dots_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	dots_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	dots_mat.vertex_color_use_as_albedo = true
-	dots_mat.no_depth_test = true
 
 	dots_mesh = ImmediateMesh.new()
 	dots_node = MeshInstance3D.new()
@@ -162,10 +160,9 @@ func get_or_create_enemy_line(slot: int) -> MeshInstance3D:
 	line.visible = false
 
 	var mat := StandardMaterial3D.new()
-	var color: Color = gm.player_colors[slot] if slot < gm.player_colors.size() else Color.WHITE
-	mat.albedo_color = Color(color.r, color.g, color.b, 0.5)
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.vertex_color_use_as_albedo = true  # so surface_set_color drives the appearance
 	line.material_override = mat
 
 	gm.add_child(line)
@@ -177,6 +174,10 @@ func get_or_create_enemy_line(slot: int) -> MeshInstance3D:
 func on_aim_received(slot: int, direction: Vector3, power: float) -> void:
 	if power < 0.01 or direction.length() < 0.01:
 		enemy_data.erase(slot)
+	elif slot in enemy_data:
+		# Update in-place — avoids allocating a new Dictionary each call (20Hz × 3 players)
+		enemy_data[slot]["dir"] = direction
+		enemy_data[slot]["power"] = power
 	else:
 		enemy_data[slot] = {"dir": direction, "power": power}
 
@@ -203,34 +204,40 @@ func update_enemy_lines() -> void:
 		var power: float = data["power"]
 		var ball_pos: Vector3 = gm.balls[slot].global_position
 
-		# Skip rebuild if dir/power/position are all unchanged since last frame
-		var last: Dictionary = _last_enemy_render.get(slot, {})
-		if not last.is_empty() \
-				and last["dir"] == dir \
-				and last["power"] == power \
-				and last["pos"].distance_squared_to(ball_pos) < 0.0001:
-			continue
-
-		_last_enemy_render[slot] = {"dir": dir, "power": power, "pos": ball_pos}
+		# Skip rebuild if dir/power/position are all unchanged since last frame.
+		# Use slot-in-dict check (no empty-dict allocation on miss).
+		if slot in _last_enemy_render:
+			var last_d: Dictionary = _last_enemy_render[slot]
+			if last_d["dir"] == dir \
+					and last_d["power"] == power \
+					and (last_d["pos"] as Vector3).distance_squared_to(ball_pos) < 0.0001:
+				continue
+			# Update in-place — avoids allocating a replacement dict each frame
+			last_d["dir"] = dir
+			last_d["power"] = power
+			last_d["pos"] = ball_pos
+		else:
+			_last_enemy_render[slot] = {"dir": dir, "power": power, "pos": ball_pos}
 
 		var line := get_or_create_enemy_line(slot)
 		line.visible = true
 		var im: ImmediateMesh = enemy_meshes[slot]
 
-		var start := ball_pos + Vector3(0, 0.05, 0)
-		var line_length := 1.0 + power * 3.5
+		var pcolor: Color = gm.player_colors[slot] if slot < gm.player_colors.size() else Color.WHITE
+		var start := ball_pos + Vector3(0, 0.12, 0)  # raised to avoid z-fighting with table
+		var line_length := 1.2 + power * 4.0
 		var end: Vector3 = start + dir * line_length
 
 		im.clear_surfaces()
 		im.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
 
-		var right := dir.cross(Vector3.UP).normalized() * 0.05
+		var right := dir.cross(Vector3.UP).normalized() * 0.08
 		var steps := 8
 		for i in (steps + 1):
 			var t := float(i) / float(steps)
 			var pos: Vector3 = start.lerp(end, t)
-			var alpha := 0.5 if fmod(t * steps, 2.0) < 1.0 else 0.2
-			im.surface_set_color(Color(1, 1, 1, alpha))
+			var alpha := 0.8 if fmod(t * steps, 2.0) < 1.0 else 0.25
+			im.surface_set_color(Color(pcolor.r, pcolor.g, pcolor.b, alpha))
 			im.surface_add_vertex(pos + right)
 			im.surface_add_vertex(pos - right)
 

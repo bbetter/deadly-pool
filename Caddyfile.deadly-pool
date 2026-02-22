@@ -2,6 +2,7 @@
 dp.900dfe11a-media.pp.ua {
 	header Cross-Origin-Opener-Policy "same-origin"
 	header Cross-Origin-Embedder-Policy "require-corp"
+	header Cache-Control "no-cache, no-store, must-revalidate"
 
 	# WebSocket proxied to Godot server container
 	handle /ws {

@@ -288,16 +288,32 @@ func create(parent: CanvasLayer) -> void:
 	_update_music_ui()
 
 	# --- Debug overlay (top-center) ---
-	_debug_label = _make_label("", 15, Color(1, 1, 1, 0.85))
-	_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_debug_label.position = Vector2(0, 6)
-	_debug_label.size = Vector2(1280, 24)
-	parent.add_child(_debug_label)
+	if OS.is_debug_build():
+		_debug_label = _make_label("", 13, Color(1, 1, 1, 0.85))
+		_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_debug_label.position = Vector2(0, 4)
+		_debug_label.size = Vector2(1280, 40)
+		parent.add_child(_debug_label)
 
 
 # --- Countdown ---
 
+func _clear_countdown_visuals() -> void:
+	if _countdown_tween and _countdown_tween.is_valid():
+		_countdown_tween.kill()
+	countdown_active = false
+	countdown_value = 0
+	if countdown_overlay and is_instance_valid(countdown_overlay):
+		countdown_overlay.queue_free()
+	countdown_overlay = null
+	if countdown_number and is_instance_valid(countdown_number):
+		countdown_number.queue_free()
+	countdown_number = null
+
+
 func create_countdown_overlay(parent: CanvasLayer) -> void:
+	# Defensive cleanup: restart RPCs or stale previous rounds must not stack overlays.
+	_clear_countdown_visuals()
 	countdown_active = true
 	countdown_value = 3
 	_countdown_start_msec = Time.get_ticks_msec()
@@ -365,14 +381,7 @@ func update_countdown(_delta: float) -> void:
 	else:
 		# new_value < 0: elapsed > 4s, dismiss immediately (catches long-tab-switch case)
 		countdown_active = false
-		if _countdown_tween and _countdown_tween.is_valid():
-			_countdown_tween.kill()
-		if countdown_overlay:
-			countdown_overlay.queue_free()
-			countdown_overlay = null
-		if countdown_number:
-			countdown_number.queue_free()
-			countdown_number = null
+		_clear_countdown_visuals()
 
 
 # --- Info label helpers ---
@@ -492,6 +501,8 @@ func hide_game_over() -> void:
 		win_panel.visible = false
 	if restart_button:
 		restart_button.visible = false
+	# Ensure stale countdown overlays from previous rounds are removed.
+	_clear_countdown_visuals()
 	if kill_feed:
 		for child in kill_feed.get_children():
 			child.queue_free()
@@ -552,17 +563,16 @@ func _add_feed_entry_styled(text: String, text_color: Color, font_size: int,
 	panel.modulate.a = 0.0
 	kill_feed.add_child(panel)
 
-	var slide_tween := gm.create_tween()
+	var slide_tween := panel.create_tween()
 	slide_tween.tween_property(panel, "modulate:a", 1.0, 0.25).set_ease(Tween.EASE_OUT)
 
 	if auto_fade:
-		_get_tree().create_timer(5.0).timeout.connect(func() -> void:
-			if not is_instance_valid(panel):
-				return
-			var fade := gm.create_tween()
-			fade.tween_property(panel, "modulate:a", 0.0, 1.0)
-			fade.tween_callback(panel.queue_free)
-		)
+		# Tween owned by panel → auto-killed when panel.queue_free() is called
+		# (e.g. by hide_game_over on round restart), so no lambda capture warning.
+		var fade_tween := panel.create_tween()
+		fade_tween.tween_interval(5.0)
+		fade_tween.tween_property(panel, "modulate:a", 0.0, 1.0)
+		fade_tween.tween_callback(panel.queue_free)
 
 
 # --- Scoreboard ---
@@ -584,20 +594,45 @@ func build_scoreboard() -> void:
 		panel.custom_minimum_size = Vector2(170, 0)
 		var style := _make_stylebox(Color(0, 0, 0, 0.4), Color.TRANSPARENT, 4, 0)
 		style.content_margin_left = 8
-		style.content_margin_right = 10
+		style.content_margin_right = 6
 		style.content_margin_top = 3
 		style.content_margin_bottom = 3
 		panel.add_theme_stylebox_override("panel", style)
 
+		var hbox := HBoxContainer.new()
+		hbox.add_theme_constant_override("separation", 4)
+		panel.add_child(hbox)
+
 		var label := Label.new()
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		label.add_theme_font_size_override("font_size", 15)
 		label.add_theme_color_override("font_shadow_color", SHADOW_COLOR)
 		label.add_theme_constant_override("shadow_offset_x", 1)
 		label.add_theme_constant_override("shadow_offset_y", 1)
-		panel.add_child(label)
+		hbox.add_child(label)
+
+		# Powerup badge — right-aligned, shows type color + armed state
+		var badge_style := _make_stylebox(Color(0, 0, 0, 0), Color.TRANSPARENT, 3, 0)
+		badge_style.content_margin_left = 4
+		badge_style.content_margin_right = 4
+		badge_style.content_margin_top = 1
+		badge_style.content_margin_bottom = 1
+		var badge_panel := PanelContainer.new()
+		badge_panel.custom_minimum_size = Vector2(36, 0)
+		badge_panel.add_theme_stylebox_override("panel", badge_style)
+		badge_panel.visible = false
+		hbox.add_child(badge_panel)
+
+		var badge_label := Label.new()
+		badge_label.add_theme_font_size_override("font_size", 13)
+		badge_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		badge_panel.add_child(badge_label)
 
 		scoreboard_container.add_child(panel)
-		_scoreboard_entries.append({"panel": panel, "label": label, "slot": slot_idx, "style": style})
+		_scoreboard_entries.append({
+			"panel": panel, "label": label, "slot": slot_idx, "style": style,
+			"badge_panel": badge_panel, "badge_label": badge_label, "badge_style": badge_style,
+		})
 
 	update_scoreboard()
 
@@ -607,6 +642,9 @@ func update_scoreboard() -> void:
 		var slot_idx: int = entry["slot"]
 		var label: Label = entry["label"]
 		var style: StyleBoxFlat = entry["style"]
+		var badge_panel: PanelContainer = entry["badge_panel"]
+		var badge_label: Label = entry["badge_label"]
+		var badge_style: StyleBoxFlat = entry["badge_style"]
 		var color: Color = gm.player_colors[slot_idx] if slot_idx < gm.player_colors.size() else Color.WHITE
 		var short_name := _short_name(slot_idx)
 		var is_me := slot_idx == NetworkManager.my_slot
@@ -619,11 +657,7 @@ func update_scoreboard() -> void:
 
 		if alive:
 			var dot := ">" if is_me else " "
-			var pu_suffix := ""
-			var pu_sym: String = gm.powerup_system.get_powerup_symbol(slot_idx)
-			if pu_sym != "":
-				pu_suffix = "  [%s]" % pu_sym
-			label.text = "%s %s%s%s" % [dot, short_name, wins_str, pu_suffix]
+			label.text = "%s %s%s" % [dot, short_name, wins_str]
 			label.add_theme_color_override("font_color", color)
 			style.bg_color = Color(color.r * 0.12, color.g * 0.12, color.b * 0.12, 0.5)
 			if is_me:
@@ -637,6 +671,52 @@ func update_scoreboard() -> void:
 				style.border_width_right = 0
 				style.border_width_top = 0
 				style.border_width_bottom = 0
+
+			# Powerup badge
+			var ball: PoolBall = gm.balls[slot_idx] if slot_idx < gm.balls.size() else null
+			var pu_type: int = ball.held_powerup if ball else Powerup.Type.NONE
+			if pu_type != Powerup.Type.NONE:
+				var pu_color: Color = Powerup.get_color(pu_type)
+				var armed: bool = ball != null and ball.powerup_armed
+				var remaining := -1.0
+				if ball != null:
+					if pu_type == Powerup.Type.FREEZE and ball.powerup_armed:
+						remaining = ball.freeze_timer
+					elif ball.armed_timer > 0.0:
+						remaining = ball.armed_timer
+				var expiring := armed and remaining > 0.0 and remaining <= GameConfig.powerup_expiring_threshold
+				badge_label.text = Powerup.get_symbol(pu_type)
+				if expiring:
+					# Expiring: warning orange + pulse to telegraph urgency.
+					var pulse := 0.65 + 0.35 * absf(sin(Time.get_ticks_msec() / 100.0))
+					badge_style.bg_color = Color(0.45, 0.2, 0.05, 0.85 * pulse)
+					badge_style.border_color = Color(1.0, 0.55, 0.2, pulse)
+					badge_style.border_width_left = 1
+					badge_style.border_width_right = 1
+					badge_style.border_width_top = 1
+					badge_style.border_width_bottom = 1
+					badge_label.add_theme_color_override("font_color", Color(1.0, 0.8, 0.3, pulse))
+				elif armed:
+					# Armed: colored background + bright border + full-brightness text
+					badge_style.bg_color = Color(pu_color.r * 0.25, pu_color.g * 0.25, pu_color.b * 0.25, 0.9)
+					badge_style.border_color = pu_color
+					badge_style.border_width_left = 1
+					badge_style.border_width_right = 1
+					badge_style.border_width_top = 1
+					badge_style.border_width_bottom = 1
+					badge_label.add_theme_color_override("font_color", pu_color)
+				else:
+					# Held, not armed: no background, dim text
+					badge_style.bg_color = Color(0, 0, 0, 0)
+					badge_style.border_width_left = 0
+					badge_style.border_width_right = 0
+					badge_style.border_width_top = 0
+					badge_style.border_width_bottom = 0
+					badge_label.add_theme_color_override("font_color",
+						Color(pu_color.r * 0.55, pu_color.g * 0.55, pu_color.b * 0.55, 0.7))
+				badge_panel.visible = true
+			else:
+				badge_panel.visible = false
 		else:
 			label.text = "  %s%s  [X]" % [short_name, wins_str]
 			label.add_theme_color_override("font_color", Color(color.r * 0.4, color.g * 0.4, color.b * 0.4, 0.6))
@@ -645,6 +725,7 @@ func update_scoreboard() -> void:
 			style.border_width_right = 0
 			style.border_width_top = 0
 			style.border_width_bottom = 0
+			badge_panel.visible = false
 
 
 func _short_name(slot: int) -> String:
@@ -702,6 +783,8 @@ func on_sync_received() -> void:
 
 
 func update_debug(delta: float) -> void:
+	if not OS.is_debug_build():
+		return
 	_debug_timer += delta
 
 	# Send ping every 3 seconds
@@ -724,6 +807,10 @@ func update_debug(delta: float) -> void:
 
 	var draw_calls: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
 	var mem_mb: float = float(Performance.get_monitor(Performance.MEMORY_STATIC)) / 1048576.0
+	var proc_ms: float = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	var phys_ms: float = Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+	var tris_k: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)) / 1000
+	var vmem_mb: float = Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0
 	var ping_ms: float = NetworkManager.client_ping_ms
 	
 	# Memory delta (allocation rate)
@@ -776,13 +863,28 @@ func update_debug(delta: float) -> void:
 			debug_line += "!"
 		if frame_time > 50:
 			debug_line += "!!"
-	
+
 	# Add allocation spike warning
 	if _alloc_spike_count > 0:
 		debug_line += " | spikes %d!" % _alloc_spike_count
 
+	# --- Line 2: frame budget breakdown ---
+	var ball_us: int = 0
+	for ball in gm.balls:
+		if ball != null:
+			ball_us += ball._last_process_us
+	var budget_line := "proc %.1fms | phys %.1fms | gm %.1fms | balls %dµs" % [
+		proc_ms, phys_ms, frame_time, ball_us]
+	budget_line += " | tris %dk | vmem %.0fMB" % [tris_k, vmem_mb]
+	var fx_rings := 0
+	var tree2 := _get_tree()
+	if tree2 and tree2.has_group("fx_rings"):
+		fx_rings = tree2.get_node_count_in_group("fx_rings")
+	if fx_rings > 0:
+		budget_line += " | rings %d" % fx_rings
+
 	if _debug_label != null:
-		_debug_label.text = debug_line
+		_debug_label.text = debug_line + "\n" + budget_line
 
 		# Color code: green=good, yellow=warning, red=bad
 		if fps < 30 or (ping_ms > 150 and ping_ms >= 0.0) or gaps > 2 or _alloc_spike_count > 3:
@@ -792,13 +894,13 @@ func update_debug(delta: float) -> void:
 		else:
 			_debug_label.add_theme_color_override("font_color", Color(0.7, 1, 0.7, 0.9))
 
-	# Print to console every 5 seconds (not every 1s to avoid spam)
+	# Print to console every 5 seconds in debug builds
 	_perf_sample_count += 1
-	if _perf_sample_count % 5 == 0:
-		print("[PERF] %s | %s" % [debug_line, _perf_renderer])
+	if OS.is_debug_build() and _perf_sample_count % 5 == 0:
+		print("[PERF] %s | %s\n[PERF] %s" % [debug_line, _perf_renderer, budget_line])
 	
 	# Log allocation spikes for debugging
-	if _obj_delta > 10:
+	if OS.is_debug_build() and _obj_delta > 10:
 		print("[PERF] ALLOC SPIKE: +%d nodes, +%.2f MB memory" % [_obj_delta, _mem_delta_mb])
 
 	# Accumulate for server report
@@ -810,7 +912,6 @@ func update_debug(delta: float) -> void:
 		_perf_fps_min = fps
 
 	# Reset allocation spike counter every 10 seconds
-	_perf_sample_count += 1
 	if _perf_sample_count % 10 == 0:
 		_alloc_spike_count = 0
 	
@@ -829,8 +930,9 @@ func _send_perf_report() -> void:
 	var sync_avg: float = _perf_sync_sum / count
 	var report := "%s|%.0f|%.0f|%.0f|%.0f" % [
 		_perf_renderer, fps_avg, _perf_fps_min, sync_avg, avg_ping]
-	print("[PERF] Sending report to server: fps_avg=%.0f fps_min=%.0f sync=%.0f/s ping=%.0fms" % [
-		fps_avg, _perf_fps_min, sync_avg, avg_ping])
+	if OS.is_debug_build():
+		print("[PERF] Sending report to server: fps_avg=%.0f fps_min=%.0f sync=%.0f/s ping=%.0fms" % [
+			fps_avg, _perf_fps_min, sync_avg, avg_ping])
 	_perf_fps_sum = 0.0
 	_perf_fps_min = 9999.0
 	_perf_sync_sum = 0.0

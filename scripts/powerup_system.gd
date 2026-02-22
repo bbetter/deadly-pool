@@ -13,6 +13,12 @@ var spawn_timer: float = 10.0  # First spawn after 10s
 # Per-player powerup tracking
 var player_powerups: Dictionary = {}  # slot -> { "type": int, "armed": bool }
 
+# Active anchor traps placed on the table (server-side)
+# Each entry: { "pos": Vector3, "owner": int, "lifetime": float }
+var active_traps: Array = []
+# Balls currently debuffed by an anchor trap: slot -> remaining_seconds
+var debuffed_balls: Dictionary = {}
+
 # HUD elements
 var hud_panel: PanelContainer
 var hud_label: RichTextLabel
@@ -29,6 +35,8 @@ func reset() -> void:
 			item.queue_free()
 	items.clear()
 	player_powerups.clear()
+	active_traps.clear()
+	debuffed_balls.clear()
 	spawn_timer = 10.0
 	update_hud()
 
@@ -91,7 +99,7 @@ func update_hud() -> void:
 			var armed: bool = pw.get("armed", false)
 			if armed:
 				hud_label.text = "[color=#%s]%s %s[/color]  [color=#ffcc44]ARMED[/color]" % [
-					color.to_html(false), Powerup.get_symbol(ptype), Powerup.get_name(ptype)]
+					color.to_html(false), Powerup.get_symbol(ptype), Powerup.get_powerup_name(ptype)]
 				# Pulse border when armed
 				var style: StyleBoxFlat = hud_panel.get_theme_stylebox("panel")
 				style.border_color = Color(1, 0.85, 0.2, 0.8)
@@ -101,7 +109,7 @@ func update_hud() -> void:
 				style.border_width_bottom = 2
 			else:
 				hud_label.text = "[color=#%s]%s %s[/color]  [color=#999999]SPACE[/color]" % [
-					color.to_html(false), Powerup.get_symbol(ptype), Powerup.get_name(ptype)]
+					color.to_html(false), Powerup.get_symbol(ptype), Powerup.get_powerup_name(ptype)]
 				var style: StyleBoxFlat = hud_panel.get_theme_stylebox("panel")
 				style.border_color = Color(1, 0.85, 0.2, 0.4)
 				style.border_width_left = 1
@@ -137,22 +145,51 @@ func server_tick(delta: float) -> void:
 			if items.size() < GameConfig.powerup_max_on_table:
 				server_spawn_powerup()
 
-	# Restore heavy ball mass when ball stops
+	# Restore heavy ball mass when ball stops (safety net for anchor debuff)
 	for ball in gm.balls:
 		if ball != null and ball.is_alive and not ball.is_pocketing:
-			if ball.mass > GameConfig.ball_mass + 0.05 and not ball.is_moving() and ball.shield_timer <= 0.0:
+			if ball.mass > GameConfig.ball_mass + 0.05 and not ball.is_moving() and ball.freeze_timer <= 0.0:
 				ball.mass = GameConfig.ball_mass
 
-	# Shield timer countdown
+	# Freeze timer countdown
 	for ball in gm.balls:
-		if ball != null and ball.is_alive and ball.shield_active:
-			ball.shield_timer -= delta
-			if ball.shield_timer <= 0.0:
-				ball.shield_active = false
-				ball.mass = GameConfig.ball_mass
+		if ball != null and ball.is_alive and ball.held_powerup == Powerup.Type.FREEZE and ball.powerup_armed:
+			ball.freeze_timer -= delta
+			if ball.freeze_timer <= 0.0:
+				ball.powerup_armed = false
+				ball.freeze = false
 				ball.held_powerup = Powerup.Type.NONE
-				_log("SHIELD_EXPIRED ball=%d" % ball.slot)
+				_log("FREEZE_EXPIRED ball=%d" % ball.slot)
 				_rpc_consumed(ball.slot)
+
+	# Anchor trap: check if any enemy ball entered a trap's radius
+	for i in range(active_traps.size() - 1, -1, -1):
+		var trap = active_traps[i]
+		trap["lifetime"] -= delta
+		if trap["lifetime"] <= 0.0:
+			active_traps.remove_at(i)
+			_log("ANCHOR_TRAP_EXPIRED owner=%d" % trap["owner"])
+			continue
+		var trap_pos: Vector3 = trap["pos"]
+		var owner: int = trap["owner"]
+		for ball in gm.balls:
+			if ball == null or not ball.is_alive or ball.is_pocketing or ball.slot == owner:
+				continue
+			if Vector2(ball.position.x, ball.position.z).distance_to(Vector2(trap_pos.x, trap_pos.z)) < GameConfig.anchor_trap_radius:
+				_apply_anchor_debuff(ball.slot)
+				active_traps.remove_at(i)
+				break
+
+	# Anchor debuff countdown (restore ball physics when debuff expires)
+	for slot in debuffed_balls.keys():
+		debuffed_balls[slot] -= delta
+		if debuffed_balls[slot] <= 0.0:
+			debuffed_balls.erase(slot)
+			if slot >= 0 and slot < gm.balls.size() and gm.balls[slot] != null:
+				var ball: PoolBall = gm.balls[slot]
+				ball.mass = GameConfig.ball_mass
+				ball.linear_damp = GameConfig.ball_linear_damp
+				_log("ANCHOR_DEBUFF_EXPIRED ball=%d" % slot)
 
 	# Armed powerup timeout — auto-trigger or consume after timeout
 	for ball in gm.balls:
@@ -161,19 +198,24 @@ func server_tick(delta: float) -> void:
 		ball.armed_timer -= delta
 		if ball.armed_timer <= 0.0:
 			ball.armed_timer = 0.0
-			if ball.held_powerup == Powerup.Type.BOMB and ball.bomb_armed:
+			if ball.held_powerup == Powerup.Type.BOMB and ball.powerup_armed:
 				_log("POWERUP_TIMEOUT ball=%d type=BOMB auto_trigger" % ball.slot)
 				trigger_bomb(ball)
-			elif ball.held_powerup == Powerup.Type.SHIELD and ball.shield_active:
-				ball.shield_active = false
-				ball.mass = GameConfig.ball_mass
+			elif ball.held_powerup == Powerup.Type.FREEZE and ball.powerup_armed:
+				ball.powerup_armed = false
+				ball.freeze = false
 				ball.held_powerup = Powerup.Type.NONE
-				_log("POWERUP_TIMEOUT ball=%d type=SHIELD expired" % ball.slot)
+				_log("POWERUP_TIMEOUT ball=%d type=FREEZE expired" % ball.slot)
 				_rpc_consumed(ball.slot)
-			elif ball.held_powerup == Powerup.Type.SPEED_BOOST and ball.speed_boost_armed:
+			elif ball.held_powerup == Powerup.Type.SPEED_BOOST and ball.powerup_armed:
 				ball.held_powerup = Powerup.Type.NONE
-				ball.speed_boost_armed = false
+				ball.powerup_armed = false
 				_log("POWERUP_TIMEOUT ball=%d type=SPEED_BOOST expired" % ball.slot)
+				_rpc_consumed(ball.slot)
+			elif ball.held_powerup == Powerup.Type.DEFLECTOR and ball.powerup_armed:
+				ball.held_powerup = Powerup.Type.NONE
+				ball.powerup_armed = false
+				_log("POWERUP_TIMEOUT ball=%d type=DEFLECTOR expired" % ball.slot)
 				_rpc_consumed(ball.slot)
 
 
@@ -229,7 +271,7 @@ func server_spawn_powerup() -> void:
 
 	if not found:
 		_log("POWERUP_SPAWN_FAILED type=%s attempts=%d table_count=%d/%d" % [
-			Powerup.get_name(type), attempts, items.size(), GameConfig.powerup_max_on_table])
+			Powerup.get_powerup_name(type), attempts, items.size(), GameConfig.powerup_max_on_table])
 		return
 
 	id_counter += 1
@@ -246,7 +288,7 @@ func server_spawn_powerup() -> void:
 		for pid in NetworkManager.get_room_peers(gm._room_code):
 			NetworkManager._rpc_game_spawn_powerup.rpc_id(pid, id, type, pos.x, pos.z)
 	_log("POWERUP_SPAWN id=%d type=%s pos=(%.1f,%.1f) attempts=%d table_count=%d/%d" % [
-		id, Powerup.get_name(type), pos.x, pos.z,
+		id, Powerup.get_powerup_name(type), pos.x, pos.z,
 		attempts, items.size(), GameConfig.powerup_max_on_table])
 
 
@@ -294,15 +336,16 @@ func server_check_pickups() -> void:
 				ball.held_powerup = pu_type
 				var ball_spd: float = ball.linear_velocity.length()
 				_log("POWERUP_SERVER_PICKUP ball=%d type=%d (int) name=%s" % [
-					ball.slot, pu_type, Powerup.get_name(pu_type)])
+					ball.slot, pu_type, Powerup.get_powerup_name(pu_type)])
 				if NetworkManager.is_single_player:
 					gm.client_receive_powerup_picked_up(pu_id, ball.slot, pu_type)
+					# on_picked_up() handles item removal
 				else:
 					to_remove.append(i)
 					for pid in NetworkManager.get_room_peers(gm._room_code):
 						NetworkManager._rpc_game_powerup_picked_up.rpc_id(pid, pu_id, ball.slot, pu_type)
 				_log("POWERUP_PICKUP ball=%d type=%s ball_spd=%.2f pos=(%.1f,%.1f) dist=%.2f" % [
-					ball.slot, Powerup.get_name(pu_type), ball_spd,
+					ball.slot, Powerup.get_powerup_name(pu_type), ball_spd,
 					ball.position.x, ball.position.z, closest_dist])
 				break
 
@@ -317,48 +360,29 @@ func server_check_pickups() -> void:
 # --- Client activation (Space key) ---
 
 func try_activate(my_slot: int, my_ball: PoolBall) -> void:
-	_log("POWERUP_ACTIVATE_REQUEST ball=%d held_powerup=%d bomb_armed=%s shield_active=%s" % [
-		my_slot, my_ball.held_powerup, my_ball.bomb_armed, my_ball.shield_active])
+	_log("POWERUP_ACTIVATE_REQUEST ball=%d held_powerup=%d powerup_armed=%s" % [
+		my_slot, my_ball.held_powerup, my_ball.powerup_armed])
 
-	if my_ball.held_powerup == Powerup.Type.SPEED_BOOST and not my_ball.speed_boost_armed:
+	if my_ball.held_powerup != Powerup.Type.NONE and not my_ball.powerup_armed:
 		if NetworkManager.is_single_player:
-			my_ball.speed_boost_armed = true
-			my_ball.armed_timer = GameConfig.powerup_armed_timeout
-			my_ball.update_powerup_icon()
-			if my_slot in player_powerups:
-				player_powerups[my_slot]["armed"] = true
-			update_hud()
-			_log("POWERUP_ARMED ball=%d type=SPEED_BOOST timeout=%.1fs (single_player)" % [my_slot, GameConfig.powerup_armed_timeout])
+			if my_ball.held_powerup == Powerup.Type.ANCHOR_TRAP:
+				trigger_anchor_trap(my_ball)
+			else:
+				my_ball.powerup_armed = true
+				my_ball.armed_timer = GameConfig.powerup_armed_timeout
+				if my_ball.held_powerup == Powerup.Type.FREEZE:
+					my_ball.freeze_timer = GameConfig.freeze_duration
+					my_ball.linear_velocity = Vector3.ZERO
+					my_ball.angular_velocity = Vector3.ZERO
+					my_ball.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+					my_ball.freeze = true
+				_log("POWERUP_ARMED ball=%d type=%s timeout=%.1fs (single_player)" % [my_slot, Powerup.get_powerup_name(my_ball.held_powerup), GameConfig.powerup_armed_timeout])
+				on_powerup_armed(my_slot, my_ball.held_powerup)
 		else:
-			_log("POWERUP_ARMED ball=%d type=SPEED_BOOST sending_rpc_to_server" % my_slot)
-			NetworkManager._rpc_game_activate_powerup.rpc_id(1, my_slot, "speed_boost")
-	elif my_ball.held_powerup == Powerup.Type.BOMB and not my_ball.bomb_armed:
-		if NetworkManager.is_single_player:
-			my_ball.bomb_armed = true
-			my_ball.armed_timer = GameConfig.powerup_armed_timeout
-			my_ball.update_powerup_icon()
-			if my_slot in player_powerups:
-				player_powerups[my_slot]["armed"] = true
-			update_hud()
-			_log("POWERUP_ARMED ball=%d type=BOMB timeout=%.1fs (single_player)" % [my_slot, GameConfig.powerup_armed_timeout])
-		else:
-			_log("POWERUP_ARMED ball=%d type=BOMB sending_rpc_to_server" % my_slot)
-			NetworkManager._rpc_game_activate_powerup.rpc_id(1, my_slot, "bomb")
-	elif my_ball.held_powerup == Powerup.Type.SHIELD and not my_ball.shield_active:
-		if NetworkManager.is_single_player:
-			my_ball.shield_active = true
-			my_ball.shield_timer = GameConfig.shield_duration
-			my_ball.mass = GameConfig.shield_mass
-			my_ball.armed_timer = GameConfig.powerup_armed_timeout
-			my_ball.update_powerup_icon()
-			if my_slot in player_powerups:
-				player_powerups[my_slot]["armed"] = true
-			update_hud()
-			_log("POWERUP_ARMED ball=%d type=SHIELD timeout=%.1fs (single_player)" % [my_slot, GameConfig.powerup_armed_timeout])
-			on_shield_activate(my_slot)
-		else:
-			_log("POWERUP_ARMED ball=%d type=SHIELD sending_rpc_to_server" % my_slot)
-			NetworkManager._rpc_game_activate_powerup.rpc_id(1, my_slot, "shield")
+			var type_str: String = {1: "speed_boost", 2: "bomb", 3: "freeze", 4: "anchor_trap", 5: "deflector"}.get(my_ball.held_powerup, "")
+			if not type_str.is_empty():
+				_log("POWERUP_ARMED ball=%d type=%s sending_rpc_to_server" % [my_slot, type_str])
+				NetworkManager._rpc_game_activate_powerup.rpc_id(1, my_slot, type_str)
 	else:
 		_log("POWERUP_ACTIVATE_FAIL ball=%d no_valid_powerup held=%d" % [my_slot, my_ball.held_powerup])
 
@@ -366,29 +390,25 @@ func try_activate(my_slot: int, my_ball: PoolBall) -> void:
 # --- Server activation (RPC handler body) ---
 
 func server_activate(slot: int, powerup_type: String, ball: PoolBall) -> void:
-	if powerup_type == "speed_boost" and ball.held_powerup == Powerup.Type.SPEED_BOOST and not ball.speed_boost_armed:
-		ball.speed_boost_armed = true
+	if ball.held_powerup == Powerup.Type.ANCHOR_TRAP and not ball.powerup_armed and powerup_type == "anchor_trap":
+		trigger_anchor_trap(ball)
+		return
+	var expected_type: String = {1: "speed_boost", 2: "bomb", 3: "freeze", 5: "deflector"}.get(ball.held_powerup, "")
+	if ball.held_powerup != Powerup.Type.NONE and not ball.powerup_armed and powerup_type == expected_type:
+		ball.powerup_armed = true
 		ball.armed_timer = GameConfig.powerup_armed_timeout
-		_log("POWERUP_ARMED ball=%d type=SPEED_BOOST timeout=%.1fs (server)" % [slot, GameConfig.powerup_armed_timeout])
+		if ball.held_powerup == Powerup.Type.FREEZE:
+			ball.freeze_timer = GameConfig.freeze_duration
+			ball.linear_velocity = Vector3.ZERO
+			ball.angular_velocity = Vector3.ZERO
+			ball.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+			ball.freeze = true
+		_log("POWERUP_ARMED ball=%d type=%s timeout=%.1fs (server)" % [slot, Powerup.get_powerup_name(ball.held_powerup), GameConfig.powerup_armed_timeout])
 		for pid in NetworkManager.get_room_peers(gm._room_code):
-			NetworkManager._rpc_game_speed_boost_armed.rpc_id(pid, slot)
-	elif powerup_type == "bomb" and ball.held_powerup == Powerup.Type.BOMB and not ball.bomb_armed:
-		ball.bomb_armed = true
-		ball.armed_timer = GameConfig.powerup_armed_timeout
-		_log("POWERUP_ARMED ball=%d type=BOMB timeout=%.1fs (server)" % [slot, GameConfig.powerup_armed_timeout])
-		for pid in NetworkManager.get_room_peers(gm._room_code):
-			NetworkManager._rpc_game_bomb_armed.rpc_id(pid, slot)
-	elif powerup_type == "shield" and ball.held_powerup == Powerup.Type.SHIELD and not ball.shield_active:
-		ball.shield_active = true
-		ball.shield_timer = GameConfig.shield_duration
-		ball.mass = GameConfig.shield_mass
-		ball.armed_timer = GameConfig.powerup_armed_timeout
-		_log("POWERUP_ARMED ball=%d type=SHIELD timeout=%.1fs (server)" % [slot, GameConfig.powerup_armed_timeout])
-		for pid in NetworkManager.get_room_peers(gm._room_code):
-			NetworkManager._rpc_game_shield_activate.rpc_id(pid, slot)
+			NetworkManager._rpc_game_powerup_armed.rpc_id(pid, slot, ball.held_powerup)
 	else:
-		_log("POWERUP_RPC_FAIL ball=%d invalid_state held=%d bomb_armed=%s shield_active=%s" % [
-			slot, ball.held_powerup, ball.bomb_armed, ball.shield_active])
+		_log("POWERUP_RPC_FAIL ball=%d invalid_state held=%d powerup_armed=%s" % [
+			slot, ball.held_powerup, ball.powerup_armed])
 
 
 # --- Powerup effects (server-side) ---
@@ -396,7 +416,7 @@ func server_activate(slot: int, powerup_type: String, ball: PoolBall) -> void:
 func trigger_bomb(ball: PoolBall) -> void:
 	_log("BOMB_TRIGGER_START ball=%d pos=(%.1f,%.1f)" % [ball.slot, ball.position.x, ball.position.z])
 	ball.held_powerup = Powerup.Type.NONE
-	ball.bomb_armed = false
+	ball.powerup_armed = false
 	ball.armed_timer = 0.0
 
 	# Use position (local) for server-side calculations
@@ -429,35 +449,11 @@ func trigger_bomb(ball: PoolBall) -> void:
 	_log("BOMB_EXPLODE ball=%d pos=(%.1f,%.1f) affected=%d" % [ball.slot, center.x, center.z, affected_count])
 
 
-func trigger_shield(shield_ball: PoolBall, attacker: PoolBall) -> void:
-	_log("SHIELD_TRIGGER_START shield_ball=%d attacker=%d" % [shield_ball.slot, attacker.slot])
-	shield_ball.held_powerup = Powerup.Type.NONE
-	shield_ball.shield_active = false
-	shield_ball.armed_timer = 0.0
-	shield_ball.mass = GameConfig.ball_mass
-
-	var push_dir := (attacker.position - shield_ball.position).normalized()
-	attacker.apply_central_impulse(push_dir * GameConfig.shield_knockback)
-
-	_log("SHIELD_BLOCK shield_ball=%d attacker=%d knockback=%.1f" % [
-		shield_ball.slot, attacker.slot, GameConfig.shield_knockback])
-
-	if NetworkManager.is_single_player:
-		gm.client_receive_shield_block(shield_ball.position.x, shield_ball.position.z)
-		gm.client_receive_powerup_consumed(shield_ball.slot)
-	else:
-		for pid in NetworkManager.get_room_peers(gm._room_code):
-			NetworkManager._rpc_game_shield_block.rpc_id(pid, shield_ball.position.x, shield_ball.position.z)
-			NetworkManager._rpc_game_powerup_consumed.rpc_id(pid, shield_ball.slot)
-
-	_log("SHIELD_BLOCK_COMPLETE shield_ball=%d attacker=%d" % [shield_ball.slot, attacker.slot])
-
-
 # --- Speed boost consumption (called from _execute_launch) ---
 
 func consume_speed_boost(ball: PoolBall, slot: int) -> void:
 	ball.held_powerup = Powerup.Type.NONE
-	ball.speed_boost_armed = false
+	ball.powerup_armed = false
 	ball.armed_timer = 0.0
 	if NetworkManager.is_single_player:
 		gm.client_receive_speed_boost(slot)
@@ -467,6 +463,38 @@ func consume_speed_boost(ball: PoolBall, slot: int) -> void:
 			NetworkManager._rpc_game_speed_boost.rpc_id(pid, slot)
 			NetworkManager._rpc_game_powerup_consumed.rpc_id(pid, slot)
 	_log("POWERUP_CONSUME ball=%d type=SPEED_BOOST visual_consumed" % slot)
+
+
+func trigger_anchor_trap(ball: PoolBall) -> void:
+	var trap_pos := ball.position
+	var owner_slot := ball.slot
+	_log("ANCHOR_TRAP_PLACE ball=%d pos=(%.1f,%.1f)" % [owner_slot, trap_pos.x, trap_pos.z])
+	ball.held_powerup = Powerup.Type.NONE
+	ball.powerup_armed = false
+	ball.armed_timer = 0.0
+	active_traps.append({"pos": trap_pos, "owner": owner_slot, "lifetime": GameConfig.anchor_trap_duration})
+	if NetworkManager.is_single_player:
+		gm.client_receive_anchor_trap_placed(owner_slot, trap_pos.x, trap_pos.z)
+		gm.client_receive_powerup_consumed(owner_slot)
+	else:
+		for pid in NetworkManager.get_room_peers(gm._room_code):
+			NetworkManager._rpc_game_anchor_trap_placed.rpc_id(pid, owner_slot, trap_pos.x, trap_pos.z)
+			NetworkManager._rpc_game_powerup_consumed.rpc_id(pid, owner_slot)
+
+
+func _apply_anchor_debuff(slot: int) -> void:
+	if slot < 0 or slot >= gm.balls.size() or gm.balls[slot] == null:
+		return
+	var ball: PoolBall = gm.balls[slot]
+	ball.mass = GameConfig.ball_mass * GameConfig.anchor_trap_mass_mult
+	ball.linear_damp = GameConfig.ball_linear_damp * GameConfig.anchor_trap_linear_damp_mult
+	debuffed_balls[slot] = GameConfig.anchor_trap_debuff_duration
+	_log("ANCHOR_TRAP_HIT ball=%d debuff=%.1fs" % [slot, GameConfig.anchor_trap_debuff_duration])
+	if NetworkManager.is_single_player:
+		gm.client_receive_anchor_effect(slot)
+	else:
+		for pid in NetworkManager.get_room_peers(gm._room_code):
+			NetworkManager._rpc_game_anchor_effect.rpc_id(pid, slot)
 
 
 # --- RPC handler bodies (called from GameManager's client_receive_* methods) ---
@@ -500,7 +528,7 @@ func on_picked_up(powerup_id: int, slot: int, type: int) -> void:
 
 	# Track powerup
 	player_powerups[slot] = {"type": type, "armed": false}
-	_log("POWERUP_PICKUP ball=%d type=%s armed=false" % [slot, Powerup.get_name(type)])
+	_log("POWERUP_PICKUP ball=%d type=%s armed=false" % [slot, Powerup.get_powerup_name(type)])
 
 	update_hud()
 	gm.game_hud.update_scoreboard()
@@ -508,7 +536,7 @@ func on_picked_up(powerup_id: int, slot: int, type: int) -> void:
 	# Flash info label
 	if slot == NetworkManager.my_slot and gm.game_hud:
 		var color := Powerup.get_color(type)
-		gm.game_hud.set_info_text("%s (SPACE) - %s" % [Powerup.get_name(type), Powerup.get_desc(type)], color)
+		gm.game_hud.set_info_text("%s (SPACE) - %s" % [Powerup.get_powerup_name(type), Powerup.get_desc(type)], color)
 		gm.get_tree().create_timer(3.0).timeout.connect(func() -> void:
 			if not is_instance_valid(gm):
 				return
@@ -523,67 +551,70 @@ func on_consumed(slot: int) -> void:
 	if slot >= 0 and slot < gm.balls.size() and gm.balls[slot] != null:
 		var ball: PoolBall = gm.balls[slot]
 		ball.held_powerup = Powerup.Type.NONE
-		ball.speed_boost_armed = false
-		ball.bomb_armed = false
-		ball.shield_active = false
+		ball.powerup_armed = false
 		ball.armed_timer = 0.0
 	update_hud()
 	gm.game_hud.update_scoreboard()
 
 
-func on_speed_boost_armed(slot: int) -> void:
+func _on_armed(slot: int) -> void:
 	if slot < 0 or slot >= gm.balls.size() or gm.balls[slot] == null:
 		return
 	var ball: PoolBall = gm.balls[slot]
-	ball.speed_boost_armed = true
-	ball.update_powerup_icon()
+	ball.powerup_armed = true
+	ball.armed_timer = GameConfig.powerup_armed_timeout
 	if slot in player_powerups:
 		player_powerups[slot]["armed"] = true
 	update_hud()
-	_log("VISUAL_SPEED_BOOST_ARMED ball=%d icon=>>" % slot)
 
 
-func on_bomb_armed(slot: int) -> void:
-	if slot < 0 or slot >= gm.balls.size() or gm.balls[slot] == null:
-		return
-	var ball: PoolBall = gm.balls[slot]
-	ball.update_powerup_icon()
-	if slot in player_powerups:
-		player_powerups[slot]["armed"] = true
-	update_hud()
-	_log("VISUAL_BOMB_ARMED ball=%d icon=(*)" % slot)
-
-
-func on_shield_activate(slot: int) -> void:
-	if slot < 0 or slot >= gm.balls.size() or gm.balls[slot] == null:
-		return
-	var ball: PoolBall = gm.balls[slot]
-	ball.update_powerup_icon()
-	if slot in player_powerups:
-		player_powerups[slot]["armed"] = true
-	update_hud()
-	# Blue sphere visual
-	var sphere := MeshInstance3D.new()
-	var sph_mesh := SphereMesh.new()
-	sph_mesh.radius = 0.6
-	sph_mesh.height = 1.2
-	sphere.mesh = sph_mesh
-
+func _spawn_arm_visual(pos: Vector3, color: Color, use_sphere: bool, duration: float, end_scale: float) -> void:
+	var node := MeshInstance3D.new()
+	if use_sphere:
+		var m := SphereMesh.new()
+		m.radius = 0.5
+		m.height = 1.0
+		node.mesh = m
+	else:
+		var m := TorusMesh.new()
+		m.inner_radius = 0.1
+		m.outer_radius = 0.4
+		node.mesh = m
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.3, 0.5, 1.0, 0.4)
+	mat.albedo_color = Color(color.r, color.g, color.b, 0.6)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.emission_enabled = true
-	mat.emission = Color(0.3, 0.5, 1.0, 0.6)
-	mat.emission_energy_multiplier = 2.0
-	sphere.material_override = mat
+	mat.emission = color
+	mat.emission_energy_multiplier = 3.0
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	node.material_override = mat
+	node.position = pos
+	gm.add_child(node)
+	var tween := gm.create_tween().set_parallel(true)
+	tween.tween_property(node, "scale", Vector3.ONE * end_scale, duration).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
+	tween.tween_property(mat, "albedo_color:a", 0.0, duration).set_ease(Tween.EASE_IN)
+	tween.chain().tween_callback(node.queue_free)
 
-	sphere.position = ball.global_position
-	gm.add_child(sphere)
 
-	var tween := gm.create_tween()
-	tween.tween_property(sphere, "scale", Vector3(1.3, 1.3, 1.3), 0.3)
-	tween.tween_property(mat, "albedo_color:a", 0.0, 0.3)
-	tween.tween_callback(sphere.queue_free)
+func on_powerup_armed(slot: int, type: int) -> void:
+	_on_armed(slot)
+	_log("VISUAL_POWERUP_ARMED ball=%d type=%s" % [slot, Powerup.get_powerup_name(type)])
+	if slot < 0 or slot >= gm.balls.size() or gm.balls[slot] == null:
+		return
+	var ball: PoolBall = gm.balls[slot]
+	if type == Powerup.Type.FREEZE:
+		ball.freeze_timer = GameConfig.freeze_duration
+	var pos: Vector3 = ball.global_position
+	var color: Color = Powerup.get_color(type)
+	match type:
+		Powerup.Type.SPEED_BOOST:
+			_spawn_arm_visual(pos, color, false, 0.20, 4.0)  # fast ring burst
+		Powerup.Type.BOMB:
+			_spawn_arm_visual(pos, color, true,  0.45, 2.5)  # slow ominous sphere swell
+		Powerup.Type.FREEZE:
+			_spawn_arm_visual(pos, color, true,  0.35, 2.0)  # icy bubble expansion
+		Powerup.Type.DEFLECTOR:
+			_spawn_arm_visual(pos, color, false, 0.35, 3.0)  # deflector field ring
 
 
 func create_shockwave_effect(pos_x: float, pos_z: float) -> void:
@@ -641,18 +672,40 @@ func create_shockwave_effect(pos_x: float, pos_z: float) -> void:
 	flash_tween.chain().tween_callback(flash.queue_free)
 
 
-func create_shield_block_effect(pos_x: float, pos_z: float) -> void:
-	var pos := Vector3(pos_x, 0.5, pos_z)
-	var burst := ComicBurst.create(pos, Color(0.8, 0.9, 1.0), 0.8)
-	gm.add_child(burst)
-
-
 func create_speed_boost_effect(slot: int) -> void:
 	if slot < 0 or slot >= gm.balls.size() or gm.balls[slot] == null:
 		return
 	var ball: PoolBall = gm.balls[slot]
 	var burst := ComicBurst.create(ball.global_position + Vector3(0, 0.3, 0), Color(0.2, 0.9, 0.9), 0.6)
 	gm.add_child(burst)
+
+
+func on_anchor_trap_placed(slot: int, pos_x: float, pos_z: float) -> void:
+	var color: Color = Powerup.get_color(Powerup.Type.ANCHOR_TRAP)
+	var pos := Vector3(pos_x, 0.1, pos_z)
+
+	# Flat glowing ring on the table marking the trap area
+	var ring_node := MeshInstance3D.new()
+	var torus := TorusMesh.new()
+	torus.inner_radius = GameConfig.anchor_trap_radius - 0.1
+	torus.outer_radius = GameConfig.anchor_trap_radius
+	ring_node.mesh = torus
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(color.r, color.g, color.b, 0.7)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.emission_enabled = true
+	mat.emission = color
+	mat.emission_energy_multiplier = 2.0
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ring_node.material_override = mat
+	ring_node.position = pos
+	gm.add_child(ring_node)
+
+	# Fade out when trap expires
+	var tween := gm.create_tween()
+	tween.tween_interval(GameConfig.anchor_trap_duration - 0.4)
+	tween.tween_property(mat, "albedo_color:a", 0.0, 0.4)
+	tween.tween_callback(ring_node.queue_free)
 
 
 func create_anchor_effect(slot: int) -> void:

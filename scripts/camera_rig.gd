@@ -6,7 +6,6 @@ extends Node3D
 
 @onready var camera: Camera3D = $Camera3D
 
-# Fixed zoom to show entire 20x20 arena
 const FIXED_ZOOM: float = 22.0
 
 var yaw: float = 0.0
@@ -15,6 +14,8 @@ var target_yaw: float = 0.0
 var target_pitch: float = 55.0
 
 var is_rotating: bool = false
+var _prev_yaw: float = -INF   # sentinel so first frame always applies
+var _prev_pitch: float = -INF
 
 
 func _ready() -> void:
@@ -41,6 +42,19 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	yaw = lerpf(yaw, target_yaw, delta * 8.0)
 	pitch = lerpf(pitch, target_pitch, delta * 8.0)
+
+	# Snap to target once close enough — stops asymptotic drift causing per-frame updates
+	if absf(yaw - target_yaw) < 0.001:
+		yaw = target_yaw
+	if absf(pitch - target_pitch) < 0.001:
+		pitch = target_pitch
+
+	# Skip the trig + look_at() call when nothing has changed
+	if yaw == _prev_yaw and pitch == _prev_pitch:
+		return
+
+	_prev_yaw = yaw
+	_prev_pitch = pitch
 	_apply_camera()
 
 
