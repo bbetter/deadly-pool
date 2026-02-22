@@ -5,16 +5,20 @@ enum Type {
 	NONE = 0,
 	SPEED_BOOST = 1,   # Arm with SPACE - 1.5x power on next shot
 	BOMB = 2,          # Arm with SPACE - explodes on collision
-	SHIELD = 3,        # Arm with SPACE - blocks one hit
+	FREEZE = 3,        # Arm with SPACE - freeze in place, acts as wall for 2s
+	ANCHOR_TRAP = 4,   # Arm with SPACE - place trap that anchors first enemy entering radius
+	DEFLECTOR = 5,     # Arm with SPACE - reflect next incoming collision impulse
 }
 
 const META := {
 	1: {"name": "Speed Boost", "symbol": ">>", "color": Color(0.2, 0.9, 0.9), "desc": "SPACE to arm - 1.5x power on next shot"},
 	2: {"name": "Bomb", "symbol": "(*)", "color": Color(1.0, 0.3, 0.1), "desc": "SPACE to arm - explode on hit"},
-	3: {"name": "Shield", "symbol": "(O)", "color": Color(0.3, 0.5, 1.0), "desc": "SPACE to arm - block one hit"},
+	3: {"name": "Freeze", "symbol": "[*]", "color": Color(0.5, 0.85, 1.0), "desc": "SPACE to arm - freeze in place, acts as wall for 2s"},
+	4: {"name": "Anchor Trap", "symbol": "{#}", "color": Color(0.7, 0.7, 0.8), "desc": "SPACE to arm - place trap that anchors first enemy"},
+	5: {"name": "Deflector", "symbol": "<>", "color": Color(0.9, 0.6, 1.0), "desc": "SPACE to arm - reflect next incoming hit"},
 }
 
-static func get_name(type: int) -> String:
+static func get_powerup_name(type: int) -> String:
 	var t := int(type)
 	if META.has(t):
 		return META[t]["name"]
@@ -39,7 +43,7 @@ static func get_desc(type: int) -> String:
 	return ""
 
 static func random_type() -> int:
-	var types := [Type.SPEED_BOOST, Type.BOMB, Type.SHIELD]
+	var types := [Type.SPEED_BOOST, Type.BOMB, Type.FREEZE, Type.ANCHOR_TRAP, Type.DEFLECTOR]
 	return types[randi() % types.size()]
 
 

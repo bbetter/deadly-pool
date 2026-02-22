@@ -319,28 +319,10 @@ func client_receive_shockwave_effect(pos_x: float, pos_z: float) -> void:
 	powerup_system.create_shockwave_effect(pos_x, pos_z)
 
 
-func client_receive_speed_boost_armed(slot: int) -> void:
+func client_receive_powerup_armed(slot: int, type: int) -> void:
 	if _is_headless:
 		return
-	powerup_system.on_speed_boost_armed(slot)
-
-
-func client_receive_bomb_armed(slot: int) -> void:
-	if _is_headless:
-		return
-	powerup_system.on_bomb_armed(slot)
-
-
-func client_receive_shield_activate(slot: int) -> void:
-	if _is_headless:
-		return
-	powerup_system.on_shield_activate(slot)
-
-
-func client_receive_shield_block(pos_x: float, pos_z: float) -> void:
-	if _is_headless:
-		return
-	powerup_system.create_shield_block_effect(pos_x, pos_z)
+	powerup_system.on_powerup_armed(slot, type)
 
 
 func client_receive_speed_boost(slot: int) -> void:
@@ -353,6 +335,12 @@ func client_receive_anchor_effect(slot: int) -> void:
 	if _is_headless:
 		return
 	powerup_system.create_anchor_effect(slot)
+
+
+func client_receive_anchor_trap_placed(slot: int, pos_x: float, pos_z: float) -> void:
+	if _is_headless:
+		return
+	powerup_system.on_anchor_trap_placed(slot, pos_x, pos_z)
 
 
 func client_receive_aim(slot: int, direction: Vector3, power: float) -> void:
@@ -557,7 +545,7 @@ func _physics_process(delta: float) -> void:
 			if _server_launch_cooldown[slot] <= 0.0:
 				_server_launch_cooldown.erase(slot)
 
-		# Powerup system tick (spawning, shield timer, armed timeout, mass restore)
+		# Powerup system tick (spawning, freeze timer, armed timeout, mass restore)
 		powerup_system.server_tick(delta)
 
 		if not NetworkManager.is_single_player:
@@ -666,7 +654,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and is_dragging:
 		_update_drag(event.position)
 
-	# SPACEBAR - activate powerup (Bomb/Shield)
+	# SPACEBAR - activate powerup (Bomb/Freeze/etc.)
 	if event is InputEventKey and event.pressed and event.keycode == KEY_SPACE:
 		_try_activate_powerup()
 
@@ -780,6 +768,11 @@ func _execute_launch(slot: int, direction: Vector3, power: float) -> void:
 		_log("LAUNCH_REJECTED slot=%d reason=BALL_MOVING spd=%.2f" % [slot, ball.linear_velocity.length()])
 		return
 
+	# Reject launch while freeze powerup is active
+	if ball.powerup_armed and ball.held_powerup == Powerup.Type.FREEZE:
+		_log("LAUNCH_REJECTED slot=%d reason=FREEZE_ACTIVE" % slot)
+		return
+
 	# Cooldown: reject if launched too recently (prevents duplicate RPCs)
 	if slot in _server_launch_cooldown:
 		_log("LAUNCH_REJECTED slot=%d reason=COOLDOWN_ACTIVE remaining=%.2fs" % [slot, _server_launch_cooldown[slot]])
@@ -798,13 +791,13 @@ func _execute_launch(slot: int, direction: Vector3, power: float) -> void:
 	var pre_mass := ball.mass
 
 	# Apply speed boost if armed (consumed on launch)
-	if ball.held_powerup == Powerup.Type.SPEED_BOOST and ball.speed_boost_armed:
+	if ball.held_powerup == Powerup.Type.SPEED_BOOST and ball.powerup_armed:
 		var pre_power := power
 		power = minf(power * GameConfig.speed_boost_multiplier, ball.max_power * GameConfig.speed_boost_multiplier)
 		_log("POWERUP_CONSUME ball=%d type=SPEED_BOOST power_before=%.1f power_after=%.1f" % [slot, pre_power, power])
 		powerup_system.consume_speed_boost(ball, slot)
 
-	# Bomb and Shield are consumed on collision, not on launch
+	# Bomb is consumed on collision, Freeze expires by timer
 
 	ball.launch(direction, power)
 
@@ -1149,26 +1142,16 @@ func _on_server_ball_collision(a: PoolBall, b: PoolBall) -> void:
 	# Log collision details
 	var rel_vel := (a.linear_velocity - b.linear_velocity).length()
 	var dist := a.position.distance_to(b.position)
-	_log("BALL_COLLISION a=%d b=%d rel_vel=%.2f dist=%.3f held_powerup_a=%d held_powerup_b=%d bomb_armed_a=%s bomb_armed_b=%s" % [
-		a.slot, b.slot, rel_vel, dist, a.held_powerup, b.held_powerup, a.bomb_armed, b.bomb_armed])
+	_log("BALL_COLLISION a=%d b=%d rel_vel=%.2f dist=%.3f held_powerup_a=%d held_powerup_b=%d powerup_armed_a=%s powerup_armed_b=%s" % [
+		a.slot, b.slot, rel_vel, dist, a.held_powerup, b.held_powerup, a.powerup_armed, b.powerup_armed])
 
 	# Check BOMB - explodes on collision
-	if a.held_powerup == Powerup.Type.BOMB and a.bomb_armed:
+	if a.held_powerup == Powerup.Type.BOMB and a.powerup_armed:
 		_log("BOMB_TRIGGER a=%d" % a.slot)
 		powerup_system.trigger_bomb(a)
-	if b.held_powerup == Powerup.Type.BOMB and b.bomb_armed:
+	if b.held_powerup == Powerup.Type.BOMB and b.powerup_armed:
 		_log("BOMB_TRIGGER b=%d" % b.slot)
 		powerup_system.trigger_bomb(b)
-
-	# Check SHIELD - blocks collision and knocks back attacker
-	if a.held_powerup == Powerup.Type.SHIELD and a.shield_active:
-		_log("SHIELD_TRIGGER a=%d" % a.slot)
-		powerup_system.trigger_shield(a, b)
-		return  # Cancel normal collision
-	if b.held_powerup == Powerup.Type.SHIELD and b.shield_active:
-		_log("SHIELD_TRIGGER b=%d" % b.slot)
-		powerup_system.trigger_shield(b, a)
-		return  # Cancel normal collision
 
 	# Normal collision continues...
 
@@ -1219,9 +1202,8 @@ func _process(delta: float) -> void:
 			var power := active_ball.get_power_ratio()
 			NetworkManager._rpc_game_send_aim.rpc_id(1, NetworkManager.my_slot, dir, power)
 
-	# Update enemy aim line visuals
-	if not NetworkManager.is_single_player:
-		aim_visuals.update_enemy_lines()
+	# Update enemy aim line visuals (bots in single-player also populate enemy_data)
+	aim_visuals.update_enemy_lines()
 
 	# Collision detection for comic burst effects and sounds.
 	# In multiplayer, the server detects and broadcasts via RPC (Fix 1).

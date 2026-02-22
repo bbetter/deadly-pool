@@ -7,8 +7,9 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY export/deadly-pool-server.x86_64 .
-COPY export/deadly-pool-server.pck .
+ARG BINARY=deadly-pool-server
+COPY export/${BINARY}.x86_64 ./deadly-pool-server.x86_64
+COPY export/${BINARY}.pck ./deadly-pool-server.pck
 RUN chmod +x deadly-pool-server.x86_64
 
 EXPOSE 9876/tcp

@@ -149,6 +149,7 @@ func _build_status_json() -> String:
 					"peer_id": pid,
 					"name": p["name"],
 					"slot": p["slot"],
+					"perf": p.get("perf", {}),
 				})
 
 		var status := "lobby"
@@ -208,6 +209,7 @@ h1 { color: #ffda33; font-size: 28px; margin-bottom: 4px; }
 .color-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
 .player-name { color: #eee; font-size: 15px; }
 .player-peer { color: #444; font-size: 12px; }
+.perf-badges { font-size: 12px; font-family: monospace; margin-left: auto; display: flex; gap: 8px; }
 .empty { color: #444; font-style: italic; padding: 20px; text-align: center; }
 .updated { color: #333; font-size: 12px; position: fixed; bottom: 12px; right: 16px; }
 </style>
@@ -229,6 +231,17 @@ function fmt(s) {
   let h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
   return h > 0 ? h+"h "+m+"m" : m > 0 ? m+"m "+sec+"s" : sec+"s";
 }
+function fpsColor(v) { return v >= 50 ? "#4dff7c" : v >= 30 ? "#ffda33" : "#ff4d4d"; }
+function pingColor(v) { return v < 0 ? "#555" : v <= 80 ? "#4dff7c" : v <= 150 ? "#ffda33" : "#ff4d4d"; }
+function perfBadges(p) {
+  if (!p || !p.fps_avg) return "";
+  let b = \'<span class="perf-badges">\';
+  b += \'<span style="color:\'+fpsColor(p.fps_avg)+\'" title="FPS avg/min: \'+p.fps_avg+\'/\'+p.fps_min+\'">\'+p.fps_avg+\'fps</span>\';
+  if (p.ping >= 0) b += \'<span style="color:\'+pingColor(p.ping)+\'" title="Round-trip ping">\'+p.ping+\'ms</span>\';
+  b += \'<span style="color:#666" title="State sync rate">\'+Math.round(p.sync)+\'/s</span>\';
+  b += \'</span>\';
+  return b;
+}
 async function refresh() {
   try {
     let r = await fetch("/api/status");
@@ -244,7 +257,7 @@ async function refresh() {
         let players = room.players.map(p => {
           let c = COLORS[p.slot] || "#888";
           let cn = COLOR_NAMES[p.slot] || "?";
-          return \'<li class="player"><span class="color-dot" style="background:\'+c+\'"></span><span class="player-name">\'+esc(p.name)+\' <small>(\'+cn+\')</small></span><span class="player-peer">peer:\'+p.peer_id+\'</span></li>\';
+          return \'<li class="player"><span class="color-dot" style="background:\'+c+\'"></span><span class="player-name">\'+esc(p.name)+\' <small>(\'+cn+\')</small></span><span class="player-peer">peer:\'+p.peer_id+\'</span>\'+perfBadges(p.perf)+\'</li>\';
         }).join("");
         return \'<div class="room"><div class="room-header"><span class="room-code">\'+room.code+\'</span><span class="badge badge-\'+room.status+\'">\'+room.status.replace("_"," ")+\'</span><span class="player-peer">\'+room.player_count+\'/4 players</span></div><ul class="player-list">\'+players+\'</ul></div>\';
       }).join("");
@@ -317,6 +330,7 @@ h1 { color: #ffda33; font-size: 24px; margin-bottom: 4px; }
 .log-line .game { color: #ffda33; }
 .log-line .powerup { color: #bf6dff; }
 .log-line .effect { color: #ff9f4d; }
+.log-line .perf { color: #4dd9ff; }
 .empty { color: #444; font-style: italic; padding: 20px; text-align: center; }
 .controls { margin-bottom: 12px; display: flex; gap: 12px; align-items: center; }
 .controls label { color: #888; font-size: 13px; }
@@ -333,6 +347,7 @@ h1 { color: #ffda33; font-size: 24px; margin-bottom: 4px; }
   <label><input type="checkbox" id="auto" checked> Auto-refresh (2s)</label>
   <label><input type="checkbox" id="showState"> Show STATE lines</label>
   <label><input type="checkbox" id="scrollLock" checked> Auto-scroll</label>
+  <input type="text" id="filterText" placeholder="Filter logs..." style="background:#0a0a14;border:1px solid #2a2a4a;border-radius:4px;color:#fff;padding:4px 8px;font-size:13px;width:200px;">
 </div>
 <div class="log-container" id="logs"><div class="empty">Select a room</div></div>
 <script>
@@ -340,10 +355,12 @@ let currentRoom = "";
 let autoRefresh = true;
 let showState = false;
 let autoScroll = true;
+let filterText = "";
 
 document.getElementById("auto").onchange = e => autoRefresh = e.target.checked;
 document.getElementById("showState").onchange = e => { showState = e.target.checked; if(currentRoom) loadLogs(currentRoom); };
 document.getElementById("scrollLock").onchange = e => autoScroll = e.target.checked;
+document.getElementById("filterText").oninput = e => { filterText = e.target.value.toLowerCase(); if(currentRoom) loadLogs(currentRoom); };
 
 async function loadRooms() {
   try {
@@ -392,6 +409,7 @@ function classify(line) {
   if (line.includes("GAME_START") || line.includes("GAME_OVER")) return "game";
   if (line.includes("POWERUP")) return "powerup";
   if (line.includes("SHOCKWAVE") || line.includes("ANCHOR")) return "effect";
+  if (line.includes("CLIENT_PERF")) return "perf";
   return "";
 }
 
@@ -406,6 +424,7 @@ async function loadLogs(code) {
     }
     let filtered = d.lines;
     if (!showState) filtered = filtered.filter(l => !l.includes("STATE"));
+    if (filterText.length > 0) filtered = filtered.filter(l => l.toLowerCase().includes(filterText));
     el.innerHTML = filtered.map(l => {
       let cls = classify(l);
       let parts = l.match(/^(\\[[^\\]]+\\])(.*)$/);
@@ -492,9 +511,7 @@ const SECTIONS = {
     ["speed_boost_multiplier", "Speed Boost", "x"],
     ["bomb_force", "Bomb Force", ""],
     ["bomb_radius", "Bomb Radius", "m"],
-    ["shield_mass", "Shield Mass", "kg"],
-    ["shield_duration", "Shield Duration", "s"],
-    ["shield_knockback", "Shield Knockback", ""],
+    ["freeze_duration", "Freeze Duration", "s"],
   ],
   "Bot AI": [
     ["bot_min_delay", "Min Delay", "s"],

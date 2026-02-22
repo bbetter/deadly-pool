@@ -9,6 +9,7 @@ signal countdown_tick(seconds_left: int)
 signal room_created(code: String)
 signal room_joined(code: String)
 signal room_join_failed(reason: String)
+signal rooms_list_received(rooms: Array)
 
 const PORT := 9876
 const MAX_PLAYERS := 4
@@ -178,6 +179,10 @@ func create_room() -> void:
 
 func join_room(code: String) -> void:
 	_rpc_join_room.rpc_id(1, code.to_upper(), my_name)
+
+
+func query_rooms() -> void:
+	_rpc_query_rooms.rpc_id(1)
 
 
 func start_countdown() -> void:
@@ -559,6 +564,36 @@ func _rpc_join_room(code: String, player_name: String) -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
+func _rpc_query_rooms() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var result: Array = []
+	for code in _rooms:
+		var room: Dictionary = _rooms[code]
+		if room["started"]:
+			continue
+		var total: int = room["players"].size()
+		if total >= MAX_PLAYERS:
+			continue
+		var creator_id: int = room["creator"]
+		var creator_name: String = players[creator_id].get("name", "?") if creator_id in players else "?"
+		result.append({
+			"code": code,
+			"players": total - room["bots"].size(),
+			"bots": room["bots"].size(),
+			"max": MAX_PLAYERS,
+			"creator": creator_name,
+		})
+	_rpc_rooms_list.rpc_id(sender, result)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_rooms_list(rooms: Array) -> void:
+	rooms_list_received.emit(rooms)
+
+
+@rpc("any_peer", "call_remote", "reliable")
 func _rpc_request_start(room_code: String) -> void:
 	if not multiplayer.is_server():
 		return
@@ -887,31 +922,10 @@ func _rpc_game_shockwave_effect(pos_x: float, pos_z: float) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func _rpc_game_speed_boost_armed(slot: int) -> void:
+func _rpc_game_powerup_armed(slot: int, type: int) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
-		gm.client_receive_speed_boost_armed(slot)
-
-
-@rpc("authority", "call_remote", "reliable")
-func _rpc_game_bomb_armed(slot: int) -> void:
-	var gm := _get_client_game_manager()
-	if gm:
-		gm.client_receive_bomb_armed(slot)
-
-
-@rpc("authority", "call_remote", "reliable")
-func _rpc_game_shield_activate(slot: int) -> void:
-	var gm := _get_client_game_manager()
-	if gm:
-		gm.client_receive_shield_activate(slot)
-
-
-@rpc("authority", "call_remote", "reliable")
-func _rpc_game_shield_block(pos_x: float, pos_z: float) -> void:
-	var gm := _get_client_game_manager()
-	if gm:
-		gm.client_receive_shield_block(pos_x, pos_z)
+		gm.client_receive_powerup_armed(slot, type)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -926,6 +940,13 @@ func _rpc_game_anchor_effect(slot: int) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
 		gm.client_receive_anchor_effect(slot)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_game_anchor_trap_placed(slot: int, pos_x: float, pos_z: float) -> void:
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_anchor_trap_placed(slot, pos_x, pos_z)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")

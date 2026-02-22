@@ -9,7 +9,6 @@ static var _mat_template: StandardMaterial3D
 
 var _mesh_node: MeshInstance3D
 var _mesh: ImmediateMesh
-var _mat: StandardMaterial3D
 var _timer: float = 0.0
 var _lifetime: float = 0.4
 var _burst_color: Color = Color.WHITE
@@ -17,6 +16,10 @@ var _burst_size: float = 1.0
 
 
 static func create(pos: Vector3, color: Color, intensity: float) -> ComicBurst:
+	# Cap simultaneous bursts — each adds a transparent draw pass on WebGL2
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree and tree.get_node_count_in_group("bursts") >= 3:
+		return null
 	var burst := ComicBurst.new()
 	burst.position = pos
 	burst._burst_color = color
@@ -33,14 +36,14 @@ func _ready() -> void:
 		_mat_template.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		_mat_template.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		_mat_template.vertex_color_use_as_albedo = true
-		_mat_template.no_depth_test = true
 		_mat_template.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_mat = _mat_template.duplicate()
-
 	_mesh = ImmediateMesh.new()
 	_mesh_node = MeshInstance3D.new()
 	_mesh_node.mesh = _mesh
-	_mesh_node.material_override = _mat
+	# Duplicate per burst so we can fade albedo_color.a independently.
+	# MeshInstance3D has no `modulate` (that's CanvasItem/2D only); albedo_color.a
+	# multiplies vertex-color alpha so fade works with vertex_color_use_as_albedo = true.
+	_mesh_node.material_override = _mat_template.duplicate()
 	add_child(_mesh_node)
 
 	_build_starburst()
@@ -111,7 +114,7 @@ func _process(delta: float) -> void:
 	scale = Vector3.ONE * scale_curve
 
 	var alpha := 1.0 if t < 0.25 else lerpf(1.0, 0.0, (t - 0.25) / 0.75)
-	_mat.albedo_color = Color(1, 1, 1, alpha)
+	(_mesh_node.material_override as StandardMaterial3D).albedo_color.a = alpha
 
 	# Label3D removed for web performance
 
