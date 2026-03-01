@@ -295,27 +295,28 @@ func _create_atmosphere() -> void:
 	var wall_mat := StandardMaterial3D.new()
 	wall_mat.albedo_color = Color(0.50, 0.36, 0.24)
 	wall_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	wall_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 
-	var room_r := 26.0   # half-extent of the room in X and Z
-	var room_h := 24.0   # ceiling height
-	var wall_w := 0.5
+	# PlaneMesh with normals rotated to face INWARD — no CULL_DISABLED needed
+	# (CULL_DISABLED doesn't work reliably in Godot's WebGL Compatibility renderer)
+	var room_r := 26.0
+	var room_h := 24.0
 	var room_d := room_r * 2.0
 
+	# [pos, rotation_degrees, size]  — normal always points toward room interior
 	var walls_data: Array = [
-		# [pos,                              size]
-		[Vector3(0,        room_h / 2, -room_r), Vector3(room_d, room_h, wall_w)],  # north
-		[Vector3(0,        room_h / 2,  room_r), Vector3(room_d, room_h, wall_w)],  # south
-		[Vector3( room_r,  room_h / 2,       0), Vector3(wall_w, room_h, room_d)],  # east
-		[Vector3(-room_r,  room_h / 2,       0), Vector3(wall_w, room_h, room_d)],  # west
-		[Vector3(0,        room_h,           0), Vector3(room_d, wall_w, room_d)],  # ceiling
+		[Vector3(0,       room_h/2, -room_r), Vector3( 90,   0,   0), Vector2(room_d, room_h)], # north  normal=+Z
+		[Vector3(0,       room_h/2,  room_r), Vector3(-90,   0,   0), Vector2(room_d, room_h)], # south  normal=-Z
+		[Vector3( room_r, room_h/2,       0), Vector3(  0,   0,  90), Vector2(room_h, room_d)], # east   normal=-X
+		[Vector3(-room_r, room_h/2,       0), Vector3(  0,   0, -90), Vector2(room_h, room_d)], # west   normal=+X
+		[Vector3(0,       room_h,         0), Vector3(180,   0,   0), Vector2(room_d, room_d)], # ceiling normal=-Y
 	]
 	for w in walls_data:
-		var box := BoxMesh.new()
-		box.size = w[1]
+		var plane := PlaneMesh.new()
+		plane.size = w[2]
 		var inst := MeshInstance3D.new()
-		inst.mesh = box
+		inst.mesh = plane
 		inst.position = w[0]
+		inst.rotation_degrees = w[1]
 		inst.set_surface_override_material(0, wall_mat)
 		root.add_child(inst)
 
