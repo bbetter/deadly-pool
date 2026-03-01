@@ -24,6 +24,7 @@ func _ready() -> void:
 	_create_cushion_walls()
 	_setup_table_pockets()
 	_create_outer_rail()
+	_create_atmosphere()
 
 
 func get_pocket_positions() -> Array[Vector3]:
@@ -187,3 +188,151 @@ func _create_outer_rail() -> void:
 	mesh_inst.mesh = st.commit()
 	mesh_inst.set_surface_override_material(0, rail_mat)
 	add_child(mesh_inst)
+
+
+func _create_atmosphere() -> void:
+	var root := get_parent()
+
+	# Dim directional lights — bar interior, not outdoors
+	for child in root.get_children():
+		if child is DirectionalLight3D:
+			child.light_energy *= 0.25
+
+	# Dark floor — slightly warm brown so it reads against the black void
+	var floor_mat := StandardMaterial3D.new()
+	floor_mat.albedo_color = Color(0.25, 0.18, 0.11)
+	floor_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	floor_mat.roughness = 0.95
+	var floor_inst := MeshInstance3D.new()
+	var floor_plane := PlaneMesh.new()
+	floor_plane.size = Vector2(100, 100)
+	floor_inst.mesh = floor_plane
+	floor_inst.position = Vector3(0, -0.02, 0)
+	floor_inst.set_surface_override_material(0, floor_mat)
+	root.add_child(floor_inst)
+
+	# Overhead warm pool lamp
+	var lamp := SpotLight3D.new()
+	lamp.position = Vector3(0, 14, 0)
+	lamp.rotation_degrees = Vector3(-90, 0, 0)
+	lamp.light_color = Color(1.0, 0.88, 0.62)
+	lamp.light_energy = 4.5
+	lamp.spot_angle = 50.0
+	lamp.spot_attenuation = 0.4
+	lamp.shadow_enabled = true
+	root.add_child(lamp)
+
+	# Neon tube meshes — actual visible glowing geometry on top of the outer rails
+	var outer_offset := EDGE_THICKNESS / 2.0 + RAIL_THICKNESS / 2.0
+	var half_w := ARENA_WIDTH / 2.0
+	var half_h := ARENA_HEIGHT / 2.0
+	var tube_y := RAIL_HEIGHT + 0.06
+	var tube_r := 0.055
+	var long_len := ARENA_WIDTH + (RAIL_THICKNESS + EDGE_THICKNESS) * 2.0
+	var short_len := ARENA_HEIGHT + (RAIL_THICKNESS + EDGE_THICKNESS) * 2.0
+
+	var cyan_mat := StandardMaterial3D.new()
+	cyan_mat.albedo_color = Color(0.0, 0.9, 1.0)
+	cyan_mat.emission_enabled = true
+	cyan_mat.emission = Color(0.0, 0.9, 1.0)
+	cyan_mat.emission_energy_multiplier = 5.0
+
+	var pink_mat := StandardMaterial3D.new()
+	pink_mat.albedo_color = Color(1.0, 0.1, 0.6)
+	pink_mat.emission_enabled = true
+	pink_mat.emission = Color(1.0, 0.1, 0.6)
+	pink_mat.emission_energy_multiplier = 5.0
+
+	var long_tube_mesh := CylinderMesh.new()
+	long_tube_mesh.top_radius = tube_r
+	long_tube_mesh.bottom_radius = tube_r
+	long_tube_mesh.height = long_len
+	long_tube_mesh.radial_segments = 8
+
+	var short_tube_mesh := CylinderMesh.new()
+	short_tube_mesh.top_radius = tube_r
+	short_tube_mesh.bottom_radius = tube_r
+	short_tube_mesh.height = short_len
+	short_tube_mesh.radial_segments = 8
+
+	# North + South cyan tubes (along X axis)
+	for sign_z in [-1, 1]:
+		var tube := MeshInstance3D.new()
+		tube.mesh = long_tube_mesh
+		tube.position = Vector3(0, tube_y, sign_z * (half_h + outer_offset))
+		tube.rotation_degrees = Vector3(0, 0, 90)
+		tube.set_surface_override_material(0, cyan_mat)
+		add_child(tube)
+
+	# East + West pink tubes (along Z axis)
+	for sign_x in [-1, 1]:
+		var tube := MeshInstance3D.new()
+		tube.mesh = short_tube_mesh
+		tube.position = Vector3(sign_x * (half_w + outer_offset), tube_y, 0)
+		tube.rotation_degrees = Vector3(90, 0, 0)
+		tube.set_surface_override_material(0, pink_mat)
+		add_child(tube)
+
+	# OmniLights paired with each tube to cast their color onto surfaces
+	var neon_lights: Array = [
+		[Vector3(0, 0.8, -(half_h + outer_offset)), Color(0.0, 0.9, 1.0), 2.0, 16.0],
+		[Vector3(0, 0.8,  (half_h + outer_offset)), Color(0.0, 0.9, 1.0), 2.0, 16.0],
+		[Vector3(-(half_w + outer_offset), 0.8, 0), Color(1.0, 0.1, 0.6), 1.5, 12.0],
+		[Vector3( (half_w + outer_offset), 0.8, 0), Color(1.0, 0.1, 0.6), 1.5, 12.0],
+	]
+	for n in neon_lights:
+		var light := OmniLight3D.new()
+		light.position = n[0]
+		light.light_color = n[1]
+		light.light_energy = n[2]
+		light.omni_range = n[3]
+		light.omni_attenuation = 1.5
+		root.add_child(light)
+
+	# Room — fully enclosed so all camera orbit angles see walls, not void.
+	# Camera orbits at radius 22, so walls sit at ±26 (safe margin).
+	# Ceiling at y=24 (camera reaches y≈22 at max pitch).
+	var wall_mat := StandardMaterial3D.new()
+	wall_mat.albedo_color = Color(0.50, 0.36, 0.24)
+	wall_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	wall_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var room_r := 26.0   # half-extent of the room in X and Z
+	var room_h := 24.0   # ceiling height
+	var wall_w := 0.5
+	var room_d := room_r * 2.0
+
+	var walls_data: Array = [
+		# [pos,                              size]
+		[Vector3(0,        room_h / 2, -room_r), Vector3(room_d, room_h, wall_w)],  # north
+		[Vector3(0,        room_h / 2,  room_r), Vector3(room_d, room_h, wall_w)],  # south
+		[Vector3( room_r,  room_h / 2,       0), Vector3(wall_w, room_h, room_d)],  # east
+		[Vector3(-room_r,  room_h / 2,       0), Vector3(wall_w, room_h, room_d)],  # west
+		[Vector3(0,        room_h,           0), Vector3(room_d, wall_w, room_d)],  # ceiling
+	]
+	for w in walls_data:
+		var box := BoxMesh.new()
+		box.size = w[1]
+		var inst := MeshInstance3D.new()
+		inst.mesh = box
+		inst.position = w[0]
+		inst.set_surface_override_material(0, wall_mat)
+		root.add_child(inst)
+
+	# WorldEnvironment: near-black background, barely-there neutral ambient,
+	# glow for tube bloom, fog so the wall edges dissolve naturally
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.02, 0.01, 0.03)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.1, 0.08, 0.12)
+	env.ambient_light_energy = 0.15
+	env.glow_enabled = true
+	env.glow_intensity = 0.5
+	env.glow_strength = 0.8
+	env.glow_bloom = 0.1
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
+
+	var world_env := WorldEnvironment.new()
+	world_env.environment = env
+	root.add_child(world_env)
