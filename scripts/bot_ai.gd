@@ -32,21 +32,19 @@ func _process(delta: float) -> void:
 			_clear_aim(slot)
 			continue
 
-		# Auto-arm any held powerup (bots always arm immediately)
+		# Auto-activate any held powerup (bots always activate immediately)
 		if ball.held_powerup != Powerup.Type.NONE and not ball.powerup_armed:
-			ball.powerup_armed = true
-			ball.armed_timer = GameConfig.powerup_armed_timeout
-			if ball.held_powerup == Powerup.Type.FREEZE:
-				ball.freeze_timer = GameConfig.freeze_duration
-				ball.linear_velocity = Vector3.ZERO
-				ball.angular_velocity = Vector3.ZERO
-				ball.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
-				ball.freeze = true
-			if NetworkManager.is_single_player:
-				game_manager.powerup_system.on_powerup_armed(slot, ball.held_powerup)
-			else:
-				for pid in NetworkManager.get_room_peers(game_manager._room_code):
-					NetworkManager._rpc_game_powerup_armed.rpc_id(pid, slot, ball.held_powerup)
+			var h := Powerup.get_handler(ball.held_powerup)
+			if h.on_activate(ball, game_manager.powerup_system):
+				# Standard arm-and-broadcast (Bomb, Speed Boost, Freeze)
+				ball.powerup_armed = true
+				ball.armed_timer = GameConfig.powerup_armed_timeout
+				if NetworkManager.is_single_player:
+					game_manager.powerup_system.on_powerup_armed(slot, ball.held_powerup)
+				else:
+					for pid in NetworkManager.get_room_peers(game_manager._room_code):
+						NetworkManager._rpc_game_powerup_armed.rpc_id(pid, slot, ball.held_powerup)
+			# else: instant-trigger (Swap) — handled via cursor_world_pos in try_activate / server_activate
 
 		# Pre-compute aim the moment ball stops so aim line shows during full countdown
 		if slot not in _bot_aim:
@@ -146,19 +144,20 @@ func _select_best_target(ball: PoolBall, targets: Array[PoolBall]) -> PoolBall:
 
 	for target: PoolBall in targets:
 		# Use position (local to room) for server-side calculations
-		var dist := ball.position.distance_to(target.position)
+		# Squared distance preserves relative ordering for scoring (no sqrt needed)
+		var dist_sq := ball.position.distance_squared_to(target.position)
 
 		# Score based on distance (closer = easier = lower score)
-		var score := dist
+		var score := dist_sq
 
 		# Add some randomness to make it unpredictable (±20%)
 		score *= randf_range(0.8, 1.2)
 
 		# Bonus for targets near pockets (easier to hit into pocket)
 		for pocket in game_manager.POCKET_POSITIONS:
-			var dist_to_pocket := target.position.distance_to(pocket)
-			if dist_to_pocket < 3.0:
+			if target.position.distance_squared_to(pocket) < 9.0:  # 3.0^2
 				score *= 0.7  # 30% easier if near pocket
+				break  # Bonus applied once — no need to check remaining pockets
 
 		if score < best_score:
 			best_score = score

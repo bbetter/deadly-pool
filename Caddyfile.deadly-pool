@@ -1,23 +1,36 @@
-# Web client — serves Godot web export with required COOP/COEP headers
-dp.900dfe11a-media.pp.ua {
-	header Cross-Origin-Opener-Policy "same-origin"
-	header Cross-Origin-Embedder-Policy "require-corp"
-	header Cache-Control "no-cache, no-store, must-revalidate"
+# Deadly Pool — served under games.900dfe11a-media.pp.ua
+# This snippet is part of /home/andri/caddy/Caddyfile on the minipc.
+# Full games block also includes AetherSpire and shared downloads hub.
+
+games.900dfe11a-media.pp.ua {
+	@dp path /dp*
+	header @dp Cross-Origin-Opener-Policy "same-origin"
+	header @dp Cross-Origin-Embedder-Policy "require-corp"
+	header @dp Cache-Control "no-cache, no-store, must-revalidate"
 
 	# WebSocket proxied to Godot server container
-	handle /ws {
+	handle /dp/ws {
 		reverse_proxy deadly-pool-server:9876
 	}
 
+	# Admin dashboard
+	handle /dp/admin* {
+		uri strip_prefix /dp/admin
+		reverse_proxy deadly-pool-admin:8080
+	}
+
 	# Static web client files
-	handle {
-		root * /home/andri/caddy/sites/deadly-pool/web
+	handle /dp* {
+		uri strip_prefix /dp
+		root * /games/dp/web
 		try_files {path} /deadly-pool.html
 		file_server
 	}
-}
 
-# Admin dashboard
-admin-dp.900dfe11a-media.pp.ua {
-	reverse_proxy deadly-pool-server:8081
+	# Downloads — native clients (Windows, Linux)
+	handle /downloads/dp* {
+		uri strip_prefix /downloads/dp
+		root * /games/dp/downloads
+		file_server browse
+	}
 }

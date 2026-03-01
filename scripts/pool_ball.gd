@@ -12,17 +12,16 @@ var max_power: float
 var min_power: float
 var slot: int = -1
 var is_pocketing: bool = false
+var last_hitter: int = -1  # Slot of the last ball to collide with this ball (kill credit)
 
 # Powerup state
 var held_powerup: int = 0  # Powerup.Type
 var powerup_armed: bool = false  # Whether the held powerup has been activated
 var freeze_timer: float = 0.0  # Freeze countdown (server-side)
 var armed_timer: float = 0.0  # Countdown until armed powerup auto-triggers/expires
-var _anchor_saved_mass: float = 0.5  # Used by anchor trap mass restore
 var _last_process_us: int = 0  # Debug: µs spent in last _process() call
 
 @onready var ball_mesh: MeshInstance3D = $BallMesh
-@onready var number_label: Label3D = $NumberLabel
 var powerup_ring: MeshInstance3D = null  # Ring aura around ball when holding powerup
 var powerup_ring_mat: StandardMaterial3D = null  # Ring material for color/alpha updates
 
@@ -44,6 +43,8 @@ var _glow_time: float = 0.0
 var _is_local_ball: bool = false
 var _ball_mat: StandardMaterial3D
 var _ring_timer: float = 0.0  # For powerup ring pulse animation
+var _cached_powerup_type: int = -1  # Cached powerup type for ring color
+var _cached_powerup_color: Color = Color.WHITE  # Cached ring color to avoid per-frame dict lookup
 
 # Client-readable velocity (linear_velocity may not be writable on frozen bodies)
 var synced_velocity: Vector3 = Vector3.ZERO
@@ -96,10 +97,13 @@ func _apply_visuals() -> void:
 		return
 	mat = mat.duplicate() as StandardMaterial3D
 	mat.albedo_color = ball_color
+	# Always keep emission enabled — toggling it creates a second WebGL shader variant
+	# which causes a synchronous shader compilation stall on web. Control glow via multiplier only.
+	mat.emission_enabled = true
+	mat.emission = ball_color
+	mat.emission_energy_multiplier = 0.0
 	ball_mesh.set_surface_override_material(0, mat)
 	_ball_mat = mat
-	if number_label:
-		number_label.text = str(player_id)
 
 
 func _create_powerup_ring() -> void:
@@ -247,8 +251,11 @@ func _process(delta: float) -> void:
 			# Update ring timer for pulse animation
 			_ring_timer += delta
 
-			# Get powerup color
-			var pu_color: Color = Powerup.get_color(held_powerup)
+			# Get powerup color — refresh cache only when powerup type changes
+			if held_powerup != _cached_powerup_type:
+				_cached_powerup_type = held_powerup
+				_cached_powerup_color = Powerup.get_color(held_powerup)
+			var pu_color: Color = _cached_powerup_color
 
 			# Pulse effect when armed
 			var armed: bool = powerup_armed
@@ -269,13 +276,10 @@ func _process(delta: float) -> void:
 		if can_launch:
 			_glow_time += delta
 			var pulse := (sin(_glow_time * 3.0) + 1.0) * 0.5  # 0..1
-			var intensity := lerpf(0.15, 0.6, pulse)
-			_ball_mat.emission_enabled = true
-			_ball_mat.emission = ball_color
-			_ball_mat.emission_energy_multiplier = intensity
+			_ball_mat.emission_energy_multiplier = lerpf(0.15, 0.6, pulse)
 		else:
-			if _ball_mat.emission_enabled:
-				_ball_mat.emission_enabled = false
+			if _ball_mat.emission_energy_multiplier > 0.0:
+				_ball_mat.emission_energy_multiplier = 0.0
 			_glow_time = 0.0
 
 	# Pocketing animation (client-side)
@@ -303,7 +307,10 @@ func _process(delta: float) -> void:
 	# close together, so a fast lerp looks smooth and hides the discrete steps —
 	# especially around wall bounces where the ball reverses direction in one tick.
 	if _is_client and _snapshot_count >= 1:
-		var blend := clampf(delta * 40.0, 0.0, 1.0)  # ~0.67 per frame at 60fps
+		# Cap blend at 0.67 (the normal 60fps value) to prevent position snapping on
+		# GC pauses: at 133ms delta blend would be 5.3→clamped to 1.0 = instant teleport.
+		# With cap=0.67, the ball instead catches up smoothly over the next 3-4 frames.
+		var blend := clampf(delta * 40.0, 0.0, 0.67)
 		global_position = global_position.lerp(_to_pos, blend)
 		rotation = rotation.lerp(_to_rot, blend)
 

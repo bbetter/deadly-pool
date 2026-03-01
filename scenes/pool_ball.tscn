@@ -1,4 +1,4 @@
-[gd_scene load_steps=6 format=3 uid="uid://dball001"]
+[gd_scene load_steps=5 format=3 uid="uid://dball001"]
 
 [ext_resource type="Script" path="res://scripts/pool_ball.gd" id="1_ball"]
 
@@ -34,11 +34,3 @@ surface_material_override/0 = SubResource("Mat_Ball")
 
 [node name="BallCollision" type="CollisionShape3D" parent="."]
 shape = SubResource("SphereShape_1")
-
-[node name="NumberLabel" type="Label3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.55, 0)
-pixel_size = 0.01
-text = "1"
-font_size = 40
-outline_size = 8
-billboard = 1

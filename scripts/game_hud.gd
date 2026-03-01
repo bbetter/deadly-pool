@@ -38,6 +38,10 @@ var scoreboard_panel: PanelContainer
 var scoreboard_header: Label
 var scoreboard_container: VBoxContainer
 var _scoreboard_entries: Array[Dictionary] = []
+var _scoreboard_expanded: bool = false
+var _compact_sb_panel: Control = null
+var _compact_sb_vbox: VBoxContainer = null
+var _compact_entries: Array[Dictionary] = []
 
 # Music controls
 var _music_panel: PanelContainer
@@ -72,6 +76,21 @@ var _perf_sample_count: int = 0
 var _perf_renderer: String = ""
 var _last_sync_time: float = 0.0
 var _sync_gaps: int = 0  # count of gaps > 100ms (missed packets)
+
+# Spectator overlay
+var _spectator_panel: Control = null
+var _join_round_btn: Button = null
+
+# Skip-round overlay (shown when human is out and only bots remain)
+var _skip_round_panel: Control = null
+var _skip_round_btn: Button = null
+
+# Info pill badge
+var _info_panel: PanelContainer = null
+var _info_style: StyleBoxFlat = null
+
+# Power bar style (for border pulse at max power)
+var _power_bar_style: StyleBoxFlat = null
 
 # Memory & allocation tracking
 var _prev_mem_mb: float = 0.0
@@ -132,64 +151,105 @@ func _style_button(btn: Button, font_size: int = 14) -> void:
 	btn.add_theme_color_override("font_hover_color", COLOR_GOLD)
 
 
+func _set_mouse_passthrough(ctrl: Control) -> void:
+	ctrl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+
 # --- Main HUD creation ---
 
 func create(parent: CanvasLayer) -> void:
-	# --- Info label (top-left) ---
-	info_label = _make_label("", 18, Color(0.9, 0.9, 0.9))
-	info_label.position = Vector2(20, 16)
+	# --- Info label (top-left, pill badge) ---
+	_info_style = _make_stylebox(Color(0.06, 0.06, 0.12, 0.65), Color.WHITE, 6, 0)
+	_info_style.content_margin_left = 8
+	_info_style.content_margin_right = 8
+	_info_style.content_margin_top = 3
+	_info_style.content_margin_bottom = 3
+	_info_style.border_width_left = 3
+	_info_panel = PanelContainer.new()
+	_set_mouse_passthrough(_info_panel)
+	_info_panel.position = Vector2(14, 10)
+	_info_panel.add_theme_stylebox_override("panel", _info_style)
+	parent.add_child(_info_panel)
+
+	info_label = _make_label("", 15, Color(0.9, 0.9, 0.9))
+	_set_mouse_passthrough(info_label)
+	_info_panel.add_child(info_label)
+
 	var my_slot := NetworkManager.my_slot
 	if my_slot >= 0 and my_slot < gm.player_names.size():
 		info_label.text = "You are %s" % gm.player_names[my_slot]
-		info_label.add_theme_color_override("font_color", gm.player_colors[my_slot])
+		var ic: Color = gm.player_colors[my_slot]
+		info_label.add_theme_color_override("font_color", ic)
+		_info_style.border_color = ic
 	else:
 		info_label.text = "Spectating"
-	parent.add_child(info_label)
 
 	# --- Scoreboard (top-left, below info) ---
 	scoreboard_panel = PanelContainer.new()
+	_set_mouse_passthrough(scoreboard_panel)
 	scoreboard_panel.position = Vector2(14, 44)
 	scoreboard_panel.add_theme_stylebox_override("panel",
 		_make_stylebox(COLOR_BG_DARK, COLOR_BORDER_SUBTLE, CORNER_RADIUS, 1))
 	parent.add_child(scoreboard_panel)
 
 	var sb_vbox := VBoxContainer.new()
+	_set_mouse_passthrough(sb_vbox)
 	sb_vbox.add_theme_constant_override("separation", 2)
 	scoreboard_panel.add_child(sb_vbox)
 
 	scoreboard_header = _make_label("SCOREBOARD", 11, COLOR_GOLD_DIM, false)
+	_set_mouse_passthrough(scoreboard_header)
 	scoreboard_header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sb_vbox.add_child(scoreboard_header)
 
 	scoreboard_container = VBoxContainer.new()
+	_set_mouse_passthrough(scoreboard_container)
 	scoreboard_container.add_theme_constant_override("separation", 2)
 	sb_vbox.add_child(scoreboard_container)
+	scoreboard_panel.visible = false  # Hidden by default; Tab reveals it
+
+	# --- Compact scoreboard (top-left, default visible) ---
+	_compact_sb_panel = PanelContainer.new()
+	_set_mouse_passthrough(_compact_sb_panel)
+	_compact_sb_panel.position = Vector2(14, 44)
+	_compact_sb_panel.add_theme_stylebox_override("panel",
+		_make_stylebox(Color(0.06, 0.06, 0.12, 0.5), Color.TRANSPARENT, CORNER_RADIUS, 0))
+	parent.add_child(_compact_sb_panel)
+
+	_compact_sb_vbox = VBoxContainer.new()
+	_set_mouse_passthrough(_compact_sb_vbox)
+	_compact_sb_vbox.add_theme_constant_override("separation", 3)
+	_compact_sb_panel.add_child(_compact_sb_vbox)
 
 	# --- Power bar (bottom-center) ---
 	power_bar_bg = PanelContainer.new()
-	power_bar_bg.custom_minimum_size = Vector2(350, 16)
-	var pb_style := _make_stylebox(Color(0.05, 0.05, 0.1, 0.85), COLOR_BORDER_SUBTLE, 8, 1)
-	pb_style.content_margin_left = 0
-	pb_style.content_margin_right = 0
-	pb_style.content_margin_top = 0
-	pb_style.content_margin_bottom = 0
-	power_bar_bg.add_theme_stylebox_override("panel", pb_style)
+	_set_mouse_passthrough(power_bar_bg)
+	power_bar_bg.custom_minimum_size = Vector2(350, 20)
+	_power_bar_style = _make_stylebox(Color(0.05, 0.05, 0.1, 0.85), COLOR_BORDER_SUBTLE, 8, 1)
+	_power_bar_style.content_margin_left = 0
+	_power_bar_style.content_margin_right = 0
+	_power_bar_style.content_margin_top = 0
+	_power_bar_style.content_margin_bottom = 0
+	power_bar_bg.add_theme_stylebox_override("panel", _power_bar_style)
 	power_bar_bg.visible = false
 	parent.add_child(power_bar_bg)
 
 	power_bar_fill = ColorRect.new()
-	power_bar_fill.size = Vector2(0, 12)
+	_set_mouse_passthrough(power_bar_fill)
+	power_bar_fill.size = Vector2(0, 16)
 	power_bar_fill.color = Color(0.2, 0.8, 0.2)
 	power_bar_fill.visible = false
 	parent.add_child(power_bar_fill)
 
 	power_pct_label = _make_label("", 11, Color.WHITE)
+	_set_mouse_passthrough(power_pct_label)
 	power_pct_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	power_pct_label.visible = false
 	parent.add_child(power_pct_label)
 
 	# --- Win screen ---
 	win_panel = PanelContainer.new()
+	_set_mouse_passthrough(win_panel)
 	win_panel.custom_minimum_size = Vector2(500, 160)
 	win_panel.add_theme_stylebox_override("panel",
 		_make_stylebox(COLOR_BG_DARK, COLOR_GOLD_DIM, 10, 2))
@@ -197,15 +257,18 @@ func create(parent: CanvasLayer) -> void:
 	parent.add_child(win_panel)
 
 	var win_vbox := VBoxContainer.new()
+	_set_mouse_passthrough(win_vbox)
 	win_vbox.alignment = BoxContainer.ALIGNMENT_CENTER
 	win_vbox.add_theme_constant_override("separation", 8)
 	win_panel.add_child(win_vbox)
 
 	win_label = _make_label("", 48, COLOR_GOLD)
+	_set_mouse_passthrough(win_label)
 	win_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	win_vbox.add_child(win_label)
 
 	win_subtitle = _make_label("Next round in 5s...", 18, COLOR_TEXT_DIM)
+	_set_mouse_passthrough(win_subtitle)
 	win_subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	win_vbox.add_child(win_subtitle)
 
@@ -219,6 +282,7 @@ func create(parent: CanvasLayer) -> void:
 
 	# --- Kill feed (top-right) ---
 	kill_feed = VBoxContainer.new()
+	_set_mouse_passthrough(kill_feed)
 	kill_feed.anchor_left = 1.0
 	kill_feed.anchor_top = 0.0
 	kill_feed.anchor_right = 1.0
@@ -233,19 +297,21 @@ func create(parent: CanvasLayer) -> void:
 
 	# --- Toast label (center-bottom) ---
 	_toast_label = _make_label("", 18, Color.WHITE)
+	_set_mouse_passthrough(_toast_label)
 	_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_toast_label.modulate.a = 0.0
 	parent.add_child(_toast_label)
 
 	# --- Music controls (bottom-left) ---
 	_music_panel = PanelContainer.new()
+	_music_panel.mouse_filter = Control.MOUSE_FILTER_PASS
 	_music_panel.anchor_left = 0.0
 	_music_panel.anchor_top = 1.0
 	_music_panel.anchor_right = 0.0
 	_music_panel.anchor_bottom = 1.0
 	_music_panel.offset_left = 12
 	_music_panel.offset_top = -48
-	_music_panel.offset_right = 200
+	_music_panel.offset_right = 162
 	_music_panel.offset_bottom = -8
 	_music_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	var music_style := _make_stylebox(COLOR_BG_DARK, COLOR_BORDER_SUBTLE, 4, 1)
@@ -257,6 +323,7 @@ func create(parent: CanvasLayer) -> void:
 	parent.add_child(_music_panel)
 
 	var music_row := HBoxContainer.new()
+	music_row.mouse_filter = Control.MOUSE_FILTER_PASS
 	music_row.add_theme_constant_override("separation", 3)
 	_music_panel.add_child(music_row)
 
@@ -274,7 +341,8 @@ func create(parent: CanvasLayer) -> void:
 	music_row.add_child(_music_vol_down_btn)
 
 	_music_vol_label = _make_label("", 13, COLOR_TEXT_DIM, false)
-	_music_vol_label.custom_minimum_size = Vector2(38, 0)
+	_set_mouse_passthrough(_music_vol_label)
+	_music_vol_label.custom_minimum_size = Vector2(28, 0)
 	_music_vol_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	music_row.add_child(_music_vol_label)
 
@@ -290,10 +358,112 @@ func create(parent: CanvasLayer) -> void:
 	# --- Debug overlay (top-center) ---
 	if OS.is_debug_build():
 		_debug_label = _make_label("", 13, Color(1, 1, 1, 0.85))
+		_set_mouse_passthrough(_debug_label)
 		_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_debug_label.position = Vector2(0, 4)
 		_debug_label.size = Vector2(1280, 40)
 		parent.add_child(_debug_label)
+
+	# --- Skip-round panel (bottom-center, hidden until only bots remain) ---
+	_skip_round_panel = PanelContainer.new()
+	_skip_round_panel.mouse_filter = Control.MOUSE_FILTER_PASS
+	_skip_round_panel.anchor_left = 0.5
+	_skip_round_panel.anchor_top = 1.0
+	_skip_round_panel.anchor_right = 0.5
+	_skip_round_panel.anchor_bottom = 1.0
+	_skip_round_panel.offset_left = -120
+	_skip_round_panel.offset_top = -54
+	_skip_round_panel.offset_right = 120
+	_skip_round_panel.offset_bottom = -12
+	_skip_round_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_skip_round_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_skip_round_panel.add_theme_stylebox_override("panel",
+		_make_stylebox(COLOR_BG_DARK, COLOR_BORDER_SUBTLE, CORNER_RADIUS, 1))
+	_skip_round_panel.visible = false
+	parent.add_child(_skip_round_panel)
+
+	_skip_round_btn = Button.new()
+	_skip_round_btn.text = "Skip round →"
+	_skip_round_btn.custom_minimum_size = Vector2(220, 36)
+	_style_button(_skip_round_btn, 15)
+	_skip_round_btn.pressed.connect(_on_skip_round_pressed)
+	_skip_round_panel.add_child(_skip_round_btn)
+
+	# --- Spectator overlay (bottom-center, only for spectators) ---
+	_create_spectator_overlay(parent)
+
+
+# --- Skip-round button ---
+
+func show_skip_round_btn() -> void:
+	if _skip_round_panel != null:
+		_skip_round_panel.visible = true
+
+
+func hide_skip_round_btn() -> void:
+	if _skip_round_panel != null:
+		_skip_round_panel.visible = false
+
+
+func _on_skip_round_pressed() -> void:
+	hide_skip_round_btn()
+	gm.skip_round()
+
+
+# --- Spectator overlay ---
+
+func _create_spectator_overlay(parent: CanvasLayer) -> void:
+	if NetworkManager.my_slot >= 0:
+		return  # Active player, not a spectator
+
+	_spectator_panel = PanelContainer.new()
+	_spectator_panel.mouse_filter = Control.MOUSE_FILTER_PASS
+	_spectator_panel.anchor_left = 0.5
+	_spectator_panel.anchor_top = 1.0
+	_spectator_panel.anchor_right = 0.5
+	_spectator_panel.anchor_bottom = 1.0
+	_spectator_panel.offset_left = -180
+	_spectator_panel.offset_top = -90
+	_spectator_panel.offset_right = 180
+	_spectator_panel.offset_bottom = -12
+	_spectator_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_spectator_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_spectator_panel.add_theme_stylebox_override("panel",
+		_make_stylebox(COLOR_BG_DARK, COLOR_BORDER_SUBTLE, CORNER_RADIUS, 1))
+	parent.add_child(_spectator_panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	_spectator_panel.add_child(vbox)
+
+	var lbl := _make_label("Spectating – game in progress", 15, COLOR_TEXT_DIM)
+	_set_mouse_passthrough(lbl)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(lbl)
+
+	_join_round_btn = Button.new()
+	_join_round_btn.text = "Join next round"
+	_join_round_btn.custom_minimum_size = Vector2(220, 36)
+	_style_button(_join_round_btn, 15)
+	_join_round_btn.pressed.connect(_on_join_round_pressed)
+	vbox.add_child(_join_round_btn)
+
+
+func _on_join_round_pressed() -> void:
+	if _join_round_btn == null:
+		return
+	if NetworkManager.current_room.is_empty():
+		return
+	_join_round_btn.disabled = true
+	_join_round_btn.text = "Queued for next round ✓"
+	NetworkManager._rpc_game_request_join_round.rpc_id(1, NetworkManager.current_room)
+
+
+func set_queued_for_round() -> void:
+	if _join_round_btn != null and is_instance_valid(_join_round_btn):
+		_join_round_btn.disabled = true
+		_join_round_btn.text = "Queued for next round ✓"
 
 
 # --- Countdown ---
@@ -392,13 +562,28 @@ func set_info_default() -> void:
 	var my_slot := NetworkManager.my_slot
 	if my_slot >= 0 and my_slot < gm.player_names.size():
 		info_label.text = "You are %s" % gm.player_names[my_slot]
-		info_label.add_theme_color_override("font_color", gm.player_colors[my_slot])
+		var c: Color = gm.player_colors[my_slot]
+		info_label.add_theme_color_override("font_color", c)
+		if _info_style != null:
+			_info_style.border_color = c
+		# If we just became a player (were spectating before), hide spectator overlay
+		if _spectator_panel != null and is_instance_valid(_spectator_panel):
+			_spectator_panel.queue_free()
+			_spectator_panel = null
+			_join_round_btn = null
+	else:
+		info_label.text = "Spectating"
+		info_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		if _info_style != null:
+			_info_style.border_color = Color(0.6, 0.6, 0.6, 0.5)
 
 
 func set_info_text(text: String, color: Color) -> void:
 	if info_label:
 		info_label.text = text
 		info_label.add_theme_color_override("font_color", color)
+		if _info_style != null:
+			_info_style.border_color = color
 
 
 func _show_toast(text: String, color: Color) -> void:
@@ -445,25 +630,41 @@ func update_power_bar(power_ratio: float) -> void:
 		else:
 			power_bar_fill.color = Color(0.9, 0.8 * (1.0 - power_ratio), 0.1)
 	if power_pct_label:
-		power_pct_label.text = "%d%%" % int(power_ratio * 100)
+		power_pct_label.text = "POWER  %d%%" % int(power_ratio * 100)
+	# Pulse border glow at max power
+	if _power_bar_style != null:
+		if power_ratio >= 0.99:
+			var pulse := 0.5 + 0.5 * absf(sin(Time.get_ticks_msec() / 120.0))
+			_power_bar_style.border_color = Color(0.95, 0.4, 0.1, pulse)
+			_power_bar_style.border_width_left = 2
+			_power_bar_style.border_width_right = 2
+			_power_bar_style.border_width_top = 2
+			_power_bar_style.border_width_bottom = 2
+		else:
+			_power_bar_style.border_color = COLOR_BORDER_SUBTLE
+			_power_bar_style.border_width_left = 1
+			_power_bar_style.border_width_right = 1
+			_power_bar_style.border_width_top = 1
+			_power_bar_style.border_width_bottom = 1
 
 
 func position_power_bar() -> void:
 	var vp := gm.get_viewport().get_visible_rect().size
 	if power_bar_bg:
-		power_bar_bg.position = Vector2(vp.x / 2.0 - 175.0, vp.y - 50.0)
-		power_bar_bg.size = Vector2(350, 16)
+		power_bar_bg.position = Vector2(vp.x / 2.0 - 175.0, vp.y - 52.0)
+		power_bar_bg.size = Vector2(350, 20)
 	if power_bar_fill:
-		power_bar_fill.position = Vector2(vp.x / 2.0 - 173.0, vp.y - 48.0)
-		power_bar_fill.size.y = 12
+		power_bar_fill.position = Vector2(vp.x / 2.0 - 173.0, vp.y - 50.0)
+		power_bar_fill.size.y = 16
 	if power_pct_label:
-		power_pct_label.position = Vector2(vp.x / 2.0 - 175.0, vp.y - 70.0)
+		power_pct_label.position = Vector2(vp.x / 2.0 - 175.0, vp.y - 72.0)
 		power_pct_label.size = Vector2(350, 20)
 
 
 # --- Win UI ---
 
 func show_game_over(winner_slot: int) -> void:
+	hide_skip_round_btn()
 	hide_power_bar()
 
 	if kill_feed and winner_slot >= 0:
@@ -490,6 +691,14 @@ func show_game_over(winner_slot: int) -> void:
 	if win_panel:
 		win_panel.visible = true
 		_position_win_ui()
+		# Entrance animation: scale up from 85% + fade in
+		win_panel.pivot_offset = Vector2(250, 80)
+		win_panel.scale = Vector2(0.85, 0.85)
+		win_panel.modulate.a = 0.0
+		var anim := gm.create_tween()
+		anim.set_parallel(true)
+		anim.tween_property(win_panel, "scale", Vector2(1.0, 1.0), 0.3).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+		anim.tween_property(win_panel, "modulate:a", 1.0, 0.2).set_ease(Tween.EASE_OUT)
 
 	if restart_button:
 		restart_button.visible = true
@@ -497,6 +706,7 @@ func show_game_over(winner_slot: int) -> void:
 
 
 func hide_game_over() -> void:
+	hide_skip_round_btn()
 	if win_panel:
 		win_panel.visible = false
 	if restart_button:
@@ -520,12 +730,17 @@ func _position_win_ui() -> void:
 
 # --- Kill feed ---
 
-func add_kill_feed_entry(slot: int) -> void:
+func add_kill_feed_entry(slot: int, killer_slot: int = -1) -> void:
 	if kill_feed == null:
 		return
-	var color: Color = gm.player_colors[slot] if slot < gm.player_colors.size() else Color.WHITE
-	var pname: String = gm.player_names[slot] if slot < gm.player_names.size() else "Player %d" % (slot + 1)
-	_add_feed_entry("[X] %s eliminated" % pname, color, Color(0, 0, 0, 0.6))
+	var victim_color: Color = gm.player_colors[slot] if slot < gm.player_colors.size() else Color.WHITE
+	var victim_name: String = gm.player_names[slot] if slot < gm.player_names.size() else "Player %d" % (slot + 1)
+	if killer_slot >= 0 and killer_slot != slot and killer_slot < gm.player_names.size():
+		var killer_color: Color = gm.player_colors[killer_slot] if killer_slot < gm.player_colors.size() else Color.WHITE
+		var killer_name: String = gm.player_names[killer_slot]
+		_add_feed_entry("%s  \u2192  %s" % [killer_name, victim_name], killer_color, Color(0, 0, 0, 0.6))
+	else:
+		_add_feed_entry("%s eliminated" % victim_name, victim_color, Color(0, 0, 0, 0.6))
 
 
 func add_disconnect_feed_entry(slot: int) -> void:
@@ -534,7 +749,7 @@ func add_disconnect_feed_entry(slot: int) -> void:
 	var color: Color = gm.player_colors[slot] if slot < gm.player_colors.size() else Color.WHITE
 	var dim_color := Color(color.r * 0.7, color.g * 0.7, color.b * 0.7)
 	var pname: String = gm.player_names[slot] if slot < gm.player_names.size() else "Player %d" % (slot + 1)
-	_add_feed_entry("[!] %s disconnected" % pname, dim_color, Color(0.15, 0.1, 0.0, 0.6))
+	_add_feed_entry("%s disconnected" % pname, dim_color, Color(0.15, 0.1, 0.0, 0.6))
 
 
 func add_kill_feed_win_entry(slot: int) -> void:
@@ -545,18 +760,49 @@ func add_kill_feed_win_entry(slot: int) -> void:
 		Color(0.15, 0.12, 0.0, 0.8), COLOR_GOLD_DIM, false)
 
 
-func _add_feed_entry(text: String, text_color: Color, bg_color: Color) -> void:
-	_add_feed_entry_styled(text, text_color, 15, bg_color, Color.TRANSPARENT, true)
+func _add_feed_entry(text: String, text_color: Color, _bg_color: Color) -> void:
+	var panel := PanelContainer.new()
+	_set_mouse_passthrough(panel)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0, 0, 0, 0.35)
+	style.corner_radius_top_left = 4
+	style.corner_radius_top_right = 4
+	style.corner_radius_bottom_left = 4
+	style.corner_radius_bottom_right = 4
+	style.border_color = text_color
+	style.border_width_left = 2
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 3
+	style.content_margin_bottom = 3
+	panel.add_theme_stylebox_override("panel", style)
+
+	var label := _make_label(text, 14, text_color)
+	_set_mouse_passthrough(label)
+	panel.add_child(label)
+
+	panel.modulate.a = 0.0
+	kill_feed.add_child(panel)
+
+	var slide_tween := panel.create_tween()
+	slide_tween.tween_property(panel, "modulate:a", 1.0, 0.25).set_ease(Tween.EASE_OUT)
+
+	var fade_tween := panel.create_tween()
+	fade_tween.tween_interval(5.0)
+	fade_tween.tween_property(panel, "modulate:a", 0.0, 1.0)
+	fade_tween.tween_callback(panel.queue_free)
 
 
 func _add_feed_entry_styled(text: String, text_color: Color, font_size: int,
 		bg_color: Color, border_color: Color, auto_fade: bool) -> void:
 	var panel := PanelContainer.new()
+	_set_mouse_passthrough(panel)
 	var bw := 1 if border_color.a > 0.01 else 0
 	panel.add_theme_stylebox_override("panel",
 		_make_stylebox(bg_color, border_color, 4, bw))
 
 	var label := _make_label(text, font_size, text_color)
+	_set_mouse_passthrough(label)
 	panel.add_child(label)
 
 	# Start off-screen right, slide in
@@ -591,12 +837,13 @@ func build_scoreboard() -> void:
 			continue
 
 		var panel := PanelContainer.new()
-		panel.custom_minimum_size = Vector2(170, 0)
+		_set_mouse_passthrough(panel)
+		panel.custom_minimum_size = Vector2(150, 0)
 		var style := _make_stylebox(Color(0, 0, 0, 0.4), Color.TRANSPARENT, 4, 0)
-		style.content_margin_left = 8
-		style.content_margin_right = 6
-		style.content_margin_top = 3
-		style.content_margin_bottom = 3
+		style.content_margin_left = 6
+		style.content_margin_right = 4
+		style.content_margin_top = 2
+		style.content_margin_bottom = 2
 		panel.add_theme_stylebox_override("panel", style)
 
 		var hbox := HBoxContainer.new()
@@ -604,8 +851,9 @@ func build_scoreboard() -> void:
 		panel.add_child(hbox)
 
 		var label := Label.new()
+		_set_mouse_passthrough(label)
 		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		label.add_theme_font_size_override("font_size", 15)
+		label.add_theme_font_size_override("font_size", 13)
 		label.add_theme_color_override("font_shadow_color", SHADOW_COLOR)
 		label.add_theme_constant_override("shadow_offset_x", 1)
 		label.add_theme_constant_override("shadow_offset_y", 1)
@@ -613,18 +861,20 @@ func build_scoreboard() -> void:
 
 		# Powerup badge — right-aligned, shows type color + armed state
 		var badge_style := _make_stylebox(Color(0, 0, 0, 0), Color.TRANSPARENT, 3, 0)
-		badge_style.content_margin_left = 4
-		badge_style.content_margin_right = 4
+		badge_style.content_margin_left = 3
+		badge_style.content_margin_right = 3
 		badge_style.content_margin_top = 1
 		badge_style.content_margin_bottom = 1
 		var badge_panel := PanelContainer.new()
-		badge_panel.custom_minimum_size = Vector2(36, 0)
+		_set_mouse_passthrough(badge_panel)
+		badge_panel.custom_minimum_size = Vector2(32, 0)
 		badge_panel.add_theme_stylebox_override("panel", badge_style)
 		badge_panel.visible = false
 		hbox.add_child(badge_panel)
 
 		var badge_label := Label.new()
-		badge_label.add_theme_font_size_override("font_size", 13)
+		_set_mouse_passthrough(badge_label)
+		badge_label.add_theme_font_size_override("font_size", 11)
 		badge_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		badge_panel.add_child(badge_label)
 
@@ -634,6 +884,7 @@ func build_scoreboard() -> void:
 			"badge_panel": badge_panel, "badge_label": badge_label, "badge_style": badge_style,
 		})
 
+	build_compact_entries()
 	update_scoreboard()
 
 
@@ -727,6 +978,8 @@ func update_scoreboard() -> void:
 			style.border_width_bottom = 0
 			badge_panel.visible = false
 
+	update_compact_scoreboard()
+
 
 func _short_name(slot: int) -> String:
 	if slot < 0 or slot >= gm.player_names.size():
@@ -736,6 +989,111 @@ func _short_name(slot: int) -> String:
 	if paren > 0:
 		return full.substr(0, paren)
 	return full
+
+
+# --- Compact scoreboard ---
+
+func set_scoreboard_expanded(expanded: bool) -> void:
+	_scoreboard_expanded = expanded
+	scoreboard_panel.visible = expanded
+	if _compact_sb_panel != null:
+		_compact_sb_panel.visible = not expanded
+
+
+func build_compact_entries() -> void:
+	if _compact_sb_vbox == null:
+		return
+	for child in _compact_sb_vbox.get_children():
+		child.queue_free()
+	_compact_entries.clear()
+
+	for slot_idx in gm.PLAYER_COUNT:
+		var has_ball: bool = slot_idx < gm.balls.size() and gm.balls[slot_idx] != null
+		if not has_ball:
+			continue
+
+		var row := HBoxContainer.new()
+		_set_mouse_passthrough(row)
+		row.add_theme_constant_override("separation", 4)
+		row.set_alignment(BoxContainer.ALIGNMENT_CENTER)
+
+		# Rounded colored dot (PanelContainer + StyleBoxFlat)
+		var dot_style := StyleBoxFlat.new()
+		dot_style.bg_color = Color.WHITE
+		dot_style.corner_radius_top_left = 3
+		dot_style.corner_radius_top_right = 3
+		dot_style.corner_radius_bottom_left = 3
+		dot_style.corner_radius_bottom_right = 3
+		var dot := PanelContainer.new()
+		dot.custom_minimum_size = Vector2(10, 10)
+		dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		dot.add_theme_stylebox_override("panel", dot_style)
+		row.add_child(dot)
+
+		# Powerup symbol (hidden if no powerup)
+		var pu_lbl := _make_label("", 11, Color.WHITE, false)
+		_set_mouse_passthrough(pu_lbl)
+		pu_lbl.visible = false
+		row.add_child(pu_lbl)
+
+		# Win count (hidden if 0)
+		var wins_lbl := _make_label("", 11, COLOR_TEXT_DIM, false)
+		_set_mouse_passthrough(wins_lbl)
+		wins_lbl.visible = false
+		row.add_child(wins_lbl)
+
+		_compact_sb_vbox.add_child(row)
+		_compact_entries.append({"slot": slot_idx, "dot": dot, "dot_style": dot_style, "pu_lbl": pu_lbl, "wins_lbl": wins_lbl})
+
+
+func update_compact_scoreboard() -> void:
+	for entry in _compact_entries:
+		var slot_idx: int = entry["slot"]
+		var dot: PanelContainer = entry["dot"]
+		var dot_style: StyleBoxFlat = entry["dot_style"]
+		var pu_lbl: Label = entry["pu_lbl"]
+		var wins_lbl: Label = entry["wins_lbl"]
+		var color: Color = gm.player_colors[slot_idx] if slot_idx < gm.player_colors.size() else Color.WHITE
+		var alive: bool = slot_idx in gm.alive_players
+
+		if alive:
+			dot_style.bg_color = color
+			dot.modulate.a = 1.0
+		else:
+			dot_style.bg_color = Color(color.r * 0.35, color.g * 0.35, color.b * 0.35)
+			dot.modulate.a = 0.5
+
+		var wins: int = NetworkManager.room_scores.get(slot_idx, 0)
+		if wins > 0:
+			wins_lbl.text = str(wins)
+			wins_lbl.visible = true
+		else:
+			wins_lbl.visible = false
+
+		var ball: PoolBall = gm.balls[slot_idx] if slot_idx < gm.balls.size() else null
+		var pu_type: int = ball.held_powerup if ball else Powerup.Type.NONE
+		if alive and pu_type != Powerup.Type.NONE:
+			var pu_color: Color = Powerup.get_color(pu_type)
+			var armed: bool = ball != null and ball.powerup_armed
+			var remaining := -1.0
+			if ball != null:
+				if pu_type == Powerup.Type.FREEZE and ball.powerup_armed:
+					remaining = ball.freeze_timer
+				elif ball.armed_timer > 0.0:
+					remaining = ball.armed_timer
+			var expiring := armed and remaining > 0.0 and remaining <= GameConfig.powerup_expiring_threshold
+			pu_lbl.text = Powerup.get_symbol(pu_type)
+			if expiring:
+				var pulse := 0.65 + 0.35 * absf(sin(Time.get_ticks_msec() / 100.0))
+				pu_lbl.add_theme_color_override("font_color", Color(1.0, 0.8, 0.3, pulse))
+			elif armed:
+				pu_lbl.add_theme_color_override("font_color", pu_color)
+			else:
+				pu_lbl.add_theme_color_override("font_color",
+					Color(pu_color.r * 0.55, pu_color.g * 0.55, pu_color.b * 0.55, 0.7))
+			pu_lbl.visible = true
+		else:
+			pu_lbl.visible = false
 
 
 # --- Music controls ---
@@ -758,7 +1116,7 @@ func _on_music_vol_up() -> void:
 func _update_music_ui() -> void:
 	if _music_mute_btn == null:
 		return
-	_music_mute_btn.text = "M" if MusicManager.is_muted() else "~"
+	_music_mute_btn.text = "\u2715" if MusicManager.is_muted() else "\u266a"
 	_music_vol_label.text = "%d%%" % MusicManager.get_volume_percent()
 	var muted := MusicManager.is_muted()
 	_music_vol_down_btn.disabled = muted
@@ -803,7 +1161,7 @@ func update_debug(delta: float) -> void:
 	_sync_gaps = 0
 	_debug_timer = 0.0
 	if _perf_renderer.is_empty():
-		_perf_renderer = RenderingServer.get_video_adapter_name()
+		call_deferred(&"_fetch_renderer_name")
 
 	var draw_calls: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
 	var mem_mb: float = float(Performance.get_monitor(Performance.MEMORY_STATIC)) / 1048576.0
@@ -827,63 +1185,66 @@ func update_debug(delta: float) -> void:
 	if _obj_delta > 5:
 		_alloc_spike_count += 1
 	
-	# Count active effects (bursts, powerup visuals)
-	var active_bursts := 0
-	if tree and tree.has_group("bursts"):
-		active_bursts = tree.get_node_count_in_group("bursts")
+	_perf_sample_count += 1
 
-	var debug_line: String = "%d FPS | sync %.0f/s" % [int(fps), sync_rate]
-	if gaps > 0:
-		debug_line += " | gaps %d!" % gaps
-	if ping_ms >= 0.0:
-		debug_line += " | ping %.0fms" % ping_ms
-	debug_line += " | draw %d | mem %.0fMB" % [draw_calls, mem_mb]
-	
-	# Add memory delta (positive = allocating, negative = GC freeing)
-	if _mem_delta_mb > 0.1:
-		debug_line += " (+%.2f)" % _mem_delta_mb
-	elif _mem_delta_mb < -0.1:
-		debug_line += " (-%.2f)" % -_mem_delta_mb
-	
-	# Add object count delta (allocations per second)
-	if _obj_delta > 0:
-		debug_line += " | obj +%d" % _obj_delta
-	elif _obj_delta < 0:
-		debug_line += " | obj %d" % _obj_delta
-	
-	# Add active effects count
-	if active_bursts > 0:
-		debug_line += " | bursts %d" % active_bursts
-	
-	# Add frame timing (from game_manager)
-	var frame_time: float = gm._last_frame_time if gm.has_method("_process") else 0.0
-	if frame_time > 0:
-		debug_line += " | frame %.1fms" % frame_time
-		if frame_time > 16:
-			debug_line += "!"
-		if frame_time > 50:
-			debug_line += "!!"
-
-	# Add allocation spike warning
-	if _alloc_spike_count > 0:
-		debug_line += " | spikes %d!" % _alloc_spike_count
-
-	# --- Line 2: frame budget breakdown ---
-	var ball_us: int = 0
-	for ball in gm.balls:
-		if ball != null:
-			ball_us += ball._last_process_us
-	var budget_line := "proc %.1fms | phys %.1fms | gm %.1fms | balls %dµs" % [
-		proc_ms, phys_ms, frame_time, ball_us]
-	budget_line += " | tris %dk | vmem %.0fMB" % [tris_k, vmem_mb]
-	var fx_rings := 0
-	var tree2 := _get_tree()
-	if tree2 and tree2.has_group("fx_rings"):
-		fx_rings = tree2.get_node_count_in_group("fx_rings")
-	if fx_rings > 0:
-		budget_line += " | rings %d" % fx_rings
-
+	# String building and group queries only needed when debug overlay is visible (debug builds)
 	if _debug_label != null:
+		# Count active effects (bursts, powerup visuals)
+		var active_bursts := 0
+		if tree and tree.has_group("bursts"):
+			active_bursts = tree.get_node_count_in_group("bursts")
+
+		var debug_line: String = "%d FPS | sync %.0f/s" % [int(fps), sync_rate]
+		if gaps > 0:
+			debug_line += " | gaps %d!" % gaps
+		if ping_ms >= 0.0:
+			debug_line += " | ping %.0fms" % ping_ms
+		debug_line += " | draw %d | mem %.0fMB" % [draw_calls, mem_mb]
+
+		# Add memory delta (positive = allocating, negative = GC freeing)
+		if _mem_delta_mb > 0.1:
+			debug_line += " (+%.2f)" % _mem_delta_mb
+		elif _mem_delta_mb < -0.1:
+			debug_line += " (-%.2f)" % -_mem_delta_mb
+
+		# Add object count delta (allocations per second)
+		if _obj_delta > 0:
+			debug_line += " | obj +%d" % _obj_delta
+		elif _obj_delta < 0:
+			debug_line += " | obj %d" % _obj_delta
+
+		# Add active effects count
+		if active_bursts > 0:
+			debug_line += " | bursts %d" % active_bursts
+
+		# Add frame timing (from game_manager)
+		var frame_time: float = gm._last_frame_time if gm.has_method("_process") else 0.0
+		if frame_time > 0:
+			debug_line += " | frame %.1fms" % frame_time
+			if frame_time > 16:
+				debug_line += "!"
+			if frame_time > 50:
+				debug_line += "!!"
+
+		# Add allocation spike warning
+		if _alloc_spike_count > 0:
+			debug_line += " | spikes %d!" % _alloc_spike_count
+
+		# --- Line 2: frame budget breakdown ---
+		var ball_us: int = 0
+		for ball in gm.balls:
+			if ball != null:
+				ball_us += ball._last_process_us
+		var budget_line := "proc %.1fms | phys %.1fms | gm %.1fms | balls %dµs" % [
+			proc_ms, phys_ms, frame_time, ball_us]
+		budget_line += " | tris %dk | vmem %.0fMB" % [tris_k, vmem_mb]
+		var fx_rings := 0
+		var tree2 := _get_tree()
+		if tree2 and tree2.has_group("fx_rings"):
+			fx_rings = tree2.get_node_count_in_group("fx_rings")
+		if fx_rings > 0:
+			budget_line += " | rings %d" % fx_rings
+
 		_debug_label.text = debug_line + "\n" + budget_line
 
 		# Color code: green=good, yellow=warning, red=bad
@@ -894,14 +1255,10 @@ func update_debug(delta: float) -> void:
 		else:
 			_debug_label.add_theme_color_override("font_color", Color(0.7, 1, 0.7, 0.9))
 
-	# Print to console every 5 seconds in debug builds
-	_perf_sample_count += 1
-	if OS.is_debug_build() and _perf_sample_count % 5 == 0:
-		print("[PERF] %s | %s\n[PERF] %s" % [debug_line, _perf_renderer, budget_line])
-	
-	# Log allocation spikes for debugging
-	if OS.is_debug_build() and _obj_delta > 10:
-		print("[PERF] ALLOC SPIKE: +%d nodes, +%.2f MB memory" % [_obj_delta, _mem_delta_mb])
+		if OS.is_debug_build() and _perf_sample_count % 5 == 0:
+			print("[PERF] %s | %s\n[PERF] %s" % [debug_line, _perf_renderer, budget_line])
+		if OS.is_debug_build() and _obj_delta > 10:
+			print("[PERF] ALLOC SPIKE: +%d nodes, +%.2f MB memory" % [_obj_delta, _mem_delta_mb])
 
 	# Accumulate for server report
 	_perf_fps_sum += fps
@@ -921,6 +1278,10 @@ func update_debug(delta: float) -> void:
 		if _perf_report_timer >= 30.0 and _perf_sample_count > 0:
 			_perf_report_timer = 0.0
 			_send_perf_report()
+
+
+func _fetch_renderer_name() -> void:
+	_perf_renderer = RenderingServer.get_video_adapter_name()
 
 
 func _send_perf_report() -> void:

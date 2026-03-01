@@ -21,24 +21,34 @@ var powerup_pickup_radius: float = 1.2
 var powerup_max_on_table: int = 3
 var powerup_spawn_min_delay: float = 8.0
 var powerup_spawn_max_delay: float = 14.0
-var speed_boost_multiplier: float = 1.5
 var bomb_force: float = 12.0
 var bomb_radius: float = 6.0
 var freeze_duration: float = 2.0  # How long ball stays frozen (acts as wall)
 var powerup_armed_timeout: float = 6.0  # Seconds before armed powerup auto-triggers/expires
 var powerup_expiring_threshold: float = 1.25  # Show EXPIRING visuals below this time
-var speed_boost_expiry_bonus_pct: float = 0.2  # Expired speed boost: +20% power next launch
 var bomb_fizzle_force_scale: float = 0.45  # Expired bomb: mini-pop force multiplier
 var bomb_fizzle_radius_scale: float = 0.6  # Expired bomb: mini-pop radius multiplier
-var anchor_trap_duration: float = 7.0
-var anchor_trap_radius: float = 1.6
-var anchor_trap_mass_mult: float = 2.8
-var anchor_trap_linear_damp_mult: float = 2.0
-var anchor_trap_debuff_duration: float = 2.2
-var anchor_trap_max_on_table_per_room: int = 1
-var deflector_impulse_scale: float = 1.25
-var deflector_min_trigger_speed: float = 1.0
-var deflector_self_knockback_scale: float = 0.25
+var portal_trap_duration: float = 10.0         # Seconds both portals stay active
+var portal_trap_placement_radius: float = 8.0  # Max distance from ball to place a portal
+var portal_trap_detection_radius: float = 0.8  # Radius for ball→portal collision
+var portal_trap_pocket_exclusion: float = 2.5  # Min distance from pocket centers
+var portal_trap_ball_exclusion: float = 1.5    # Min distance from any ball
+var portal_trap_min_portal_dist: float = 3.0   # Min distance between blue and orange portals
+var portal_trap_reentry_cooldown: float = 0.5  # Per-ball cooldown after transiting
+var gravity_well_duration: float = 6.0
+var gravity_well_radius: float = 2.6
+var gravity_well_pull_strength: float = 2.2
+var gravity_well_max_speed: float = 12.0
+var gravity_well_pocket_exclusion: float = 2.4
+
+# --- Powerup Spawn Weights ---
+# Relative chance each type appears. 0 = disabled, 2 = twice as likely as 1.
+var powerup_weight_bomb: float = 1.0
+var powerup_weight_freeze: float = 1.0
+var powerup_weight_portal_trap: float = 1.0
+var powerup_weight_swap: float = 1.0
+var powerup_weight_gravity_well: float = 1.0
+var swap_cursor_snap_radius: float = 2.0  # Max cursor distance to snap to a target ball
 
 # --- Bot AI ---
 var bot_min_delay: float = 1.0
@@ -71,7 +81,9 @@ var _defaults: Dictionary = {}
 
 
 func _ready() -> void:
-	_defaults = to_dict()
+	# Only needed on server (admin dashboard reset_defaults). Skip on web clients.
+	if not OS.get_name() == "Web":
+		_defaults = to_dict()
 
 
 func reset_defaults() -> void:
@@ -96,24 +108,31 @@ func to_dict() -> Dictionary:
 		"powerup_max_on_table": powerup_max_on_table,
 		"powerup_spawn_min_delay": powerup_spawn_min_delay,
 		"powerup_spawn_max_delay": powerup_spawn_max_delay,
-		"speed_boost_multiplier": speed_boost_multiplier,
 		"bomb_force": bomb_force,
 		"bomb_radius": bomb_radius,
 		"freeze_duration": freeze_duration,
 		"powerup_armed_timeout": powerup_armed_timeout,
 		"powerup_expiring_threshold": powerup_expiring_threshold,
-		"speed_boost_expiry_bonus_pct": speed_boost_expiry_bonus_pct,
 		"bomb_fizzle_force_scale": bomb_fizzle_force_scale,
 		"bomb_fizzle_radius_scale": bomb_fizzle_radius_scale,
-		"anchor_trap_duration": anchor_trap_duration,
-		"anchor_trap_radius": anchor_trap_radius,
-			"anchor_trap_mass_mult": anchor_trap_mass_mult,
-			"anchor_trap_linear_damp_mult": anchor_trap_linear_damp_mult,
-			"anchor_trap_debuff_duration": anchor_trap_debuff_duration,
-			"anchor_trap_max_on_table_per_room": anchor_trap_max_on_table_per_room,
-		"deflector_impulse_scale": deflector_impulse_scale,
-		"deflector_min_trigger_speed": deflector_min_trigger_speed,
-		"deflector_self_knockback_scale": deflector_self_knockback_scale,
+		"portal_trap_duration": portal_trap_duration,
+		"portal_trap_placement_radius": portal_trap_placement_radius,
+		"portal_trap_detection_radius": portal_trap_detection_radius,
+		"portal_trap_pocket_exclusion": portal_trap_pocket_exclusion,
+		"portal_trap_ball_exclusion": portal_trap_ball_exclusion,
+		"portal_trap_min_portal_dist": portal_trap_min_portal_dist,
+		"portal_trap_reentry_cooldown": portal_trap_reentry_cooldown,
+		"gravity_well_duration": gravity_well_duration,
+		"gravity_well_radius": gravity_well_radius,
+		"gravity_well_pull_strength": gravity_well_pull_strength,
+		"gravity_well_max_speed": gravity_well_max_speed,
+		"gravity_well_pocket_exclusion": gravity_well_pocket_exclusion,
+		"powerup_weight_bomb": powerup_weight_bomb,
+		"powerup_weight_freeze": powerup_weight_freeze,
+		"powerup_weight_portal_trap": powerup_weight_portal_trap,
+		"powerup_weight_swap": powerup_weight_swap,
+		"powerup_weight_gravity_well": powerup_weight_gravity_well,
+		"swap_cursor_snap_radius": swap_cursor_snap_radius,
 		"bot_min_delay": bot_min_delay,
 		"bot_max_delay": bot_max_delay,
 		"bot_power_min_pct": bot_power_min_pct,

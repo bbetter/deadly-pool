@@ -12,7 +12,7 @@ signal room_join_failed(reason: String)
 signal rooms_list_received(rooms: Array)
 
 const PORT := 9876
-const MAX_PLAYERS := 4
+const MAX_PLAYERS := 8
 const COUNTDOWN_SECONDS := 5
 const MAIN_SCENE := preload("res://scenes/main.tscn")
 const ROOM_SPACING := 1000.0  # Spatial offset between rooms for physics isolation
@@ -25,6 +25,7 @@ var my_name: String = "Player"
 var is_server_mode: bool = false
 var is_single_player: bool = false
 var bot_slots: Array[int] = []  # Single-player only
+var solo_enabled_powerups: Array[int] = [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL]
 
 # Room management
 var current_room: String = ""  # Client-side only (server uses per-room data)
@@ -43,9 +44,24 @@ const MAX_LOG_LINES := 200
 var _room_container: Node = null
 var _room_index_counter: int = 0
 
+# Per-physics-frame peer-list cache — rebuilds each frame, shared across all callers in same tick
+var _peer_cache: Dictionary = {}  # room_code -> Array[int]
+var _peer_cache_frame: int = -1
+
+# room_log timestamp cache — avoids calling get_datetime_dict_from_system() more than once/sec
+var _log_datetime_cache: Dictionary = {}
+var _log_datetime_cache_ms: int = -1
+
 func room_log(room_code: String, msg: String) -> void:
-	var now := Time.get_datetime_dict_from_system()
-	var ts := "%02d:%02d:%04d %02d:%02d:%02d.%03d" % [now.day, now.month, now.year, now.hour, now.minute, now.second, int((Time.get_ticks_msec() % 1000))]
+	if not multiplayer.is_server():
+		return  # Clients don't serve the admin dashboard; skip all string/array allocs
+	# Cache datetime dict — refreshed at most once per second via cheap ticks comparison
+	var now_ms := int(Time.get_ticks_msec())
+	if now_ms - _log_datetime_cache_ms >= 1000:
+		_log_datetime_cache = Time.get_datetime_dict_from_system()
+		_log_datetime_cache_ms = now_ms
+	var now := _log_datetime_cache
+	var ts := "%02d:%02d:%04d %02d:%02d:%02d.%03d" % [now.day, now.month, now.year, now.hour, now.minute, now.second, int(now_ms % 1000)]
 	var line := "[%s] %s" % [ts, msg]
 	if room_code not in room_logs:
 		room_logs[room_code] = []
@@ -165,7 +181,7 @@ func connect_to_server(ip: String, player_name: String) -> void:
 		url = "ws://%s:%d" % [ip, PORT]
 	else:
 		# Remote server: connect via Caddy reverse proxy path
-		url = "wss://%s/ws" % ip
+		url = "wss://%s/dp/ws" % ip
 	var err := peer.create_client(url)
 	if err != OK:
 		connection_failed.emit()
@@ -173,8 +189,8 @@ func connect_to_server(ip: String, player_name: String) -> void:
 	multiplayer.multiplayer_peer = peer
 
 
-func create_room() -> void:
-	_rpc_create_room.rpc_id(1, my_name)
+func create_room(enabled_powerups: Array[int] = []) -> void:
+	_rpc_create_room.rpc_id(1, my_name, enabled_powerups)
 
 
 func join_room(code: String) -> void:
@@ -203,19 +219,25 @@ func request_remove_bot(bot_peer_id: int) -> void:
 	_rpc_request_remove_bot.rpc_id(1, current_room, bot_peer_id)
 
 
-func start_single_player(player_name: String, bot_count: int) -> void:
+func start_single_player(player_name: String, bot_count: int, enabled_powerups: Array[int] = []) -> void:
 	is_single_player = true
 	my_name = player_name
 	my_slot = 0
 	my_peer_id = 1
 	current_room = "SOLO"
 	bot_slots.clear()
+	solo_enabled_powerups.clear()
+	for t in enabled_powerups:
+		if t in [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL] and t not in solo_enabled_powerups:
+			solo_enabled_powerups.append(t)
+	if solo_enabled_powerups.is_empty():
+		solo_enabled_powerups = [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL]
 
 	# Slot 0 = human player
 	players[1] = {"name": player_name.substr(0, 20), "slot": 0, "room": "SOLO"}
 
 	# Slots 1..bot_count = bots
-	var bot_names: Array[String] = ["Bot 1", "Bot 2", "Bot 3"]
+	var bot_names: Array[String] = ["Bot 1", "Bot 2", "Bot 3", "Bot 4", "Bot 5", "Bot 6", "Bot 7"]
 	for i in bot_count:
 		var slot := i + 1
 		var fake_peer := slot + 100  # Fake peer IDs for bots
@@ -232,6 +254,7 @@ func end_single_player() -> void:
 	my_slot = -1
 	current_room = ""
 	bot_slots.clear()
+	solo_enabled_powerups = [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL]
 	room_scores.clear()
 
 
@@ -307,6 +330,8 @@ func _on_peer_disconnected(id: int) -> void:
 	if room_code in _rooms:
 		var room: Dictionary = _rooms[room_code]
 		room["players"].erase(id)
+		room["spectators"].erase(id)
+		room["pending_players"].erase(id)
 
 		# Check if any real players remain
 		var real_players := 0
@@ -373,6 +398,7 @@ func _broadcast_room_lobby(room_code: String) -> void:
 				"name": players[pid]["name"],
 				"slot": players[pid]["slot"],
 				"is_bot": players[pid].get("is_bot", false),
+				"spectator": players[pid].get("spectator", false),
 			})
 
 	var creator_id: int = room["creator"]
@@ -454,15 +480,21 @@ func _get_client_game_manager() -> Node:
 	return null
 
 
-## Get all real peer IDs in a room
+## Get all real peer IDs in a room.
+## Result is cached per physics frame — all callers in the same physics tick share one allocation.
 func get_room_peers(room_code: String) -> Array[int]:
+	var frame := Engine.get_physics_frames()
+	if frame == _peer_cache_frame and room_code in _peer_cache:
+		return _peer_cache[room_code]
+	if frame != _peer_cache_frame:
+		_peer_cache.clear()
+		_peer_cache_frame = frame
 	var peers: Array[int] = []
-	if room_code.is_empty() or room_code not in _rooms:
-		return peers
-	var room: Dictionary = _rooms[room_code]
-	for pid: int in room["players"]:
-		if pid > 0:
-			peers.append(pid)
+	if not room_code.is_empty() and room_code in _rooms:
+		for pid: int in _rooms[room_code]["players"]:
+			if pid > 0:
+				peers.append(pid)
+	_peer_cache[room_code] = peers
 	return peers
 
 
@@ -475,7 +507,7 @@ func broadcast_to_room(room_code: String, rpc_method: Callable, args: Array) -> 
 # --- RPCs: Client -> Server (Lobby) ---
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rpc_create_room(player_name: String) -> void:
+func _rpc_create_room(player_name: String, enabled_powerups: Array[int] = []) -> void:
 	if not multiplayer.is_server():
 		return
 
@@ -489,6 +521,13 @@ func _rpc_create_room(player_name: String) -> void:
 	var code := _generate_room_code()
 	while code in _rooms:
 		code = _generate_room_code()
+
+	var safe_enabled: Array[int] = []
+	for t in enabled_powerups:
+		if t in [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL] and t not in safe_enabled:
+			safe_enabled.append(t)
+	if safe_enabled.is_empty():
+		safe_enabled = [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL]
 
 	# Create the room
 	_rooms[code] = {
@@ -504,6 +543,9 @@ func _rpc_create_room(player_name: String) -> void:
 		"bot_slots": [],
 		"game_manager": null,
 		"room_index": -1,
+		"spectators": [],       # peer IDs watching mid-game (slot = -1)
+		"pending_players": [],  # spectators who clicked "Join next round"
+		"enabled_powerups": safe_enabled,
 	}
 
 	# Register the player
@@ -534,7 +576,24 @@ func _rpc_join_room(code: String, player_name: String) -> void:
 	var room: Dictionary = _rooms[code]
 
 	if room["started"]:
-		_rpc_room_join_failed.rpc_id(sender, "Game already in progress")
+		# Mid-game join → spectator mode (watch current round, join next)
+		if room["players"].size() >= MAX_PLAYERS:
+			_rpc_room_join_failed.rpc_id(sender, "Room is full")
+			return
+		room["players"].append(sender)
+		room["spectators"].append(sender)
+		players[sender] = {
+			"name": player_name.substr(0, 20),
+			"slot": -1,
+			"room": code,
+			"spectator": true,
+		}
+		print("[SERVER] Peer %d (%s) joined room %s as spectator (%d/%d)" % [
+			sender, player_name, code, room["players"].size(), MAX_PLAYERS])
+		_rpc_assign_slot.rpc_id(sender, -1)
+		_rpc_room_joined.rpc_id(sender, code)
+		_rpc_start_game.rpc_id(sender)
+		_broadcast_room_lobby(code)
 		return
 
 	if room["players"].size() >= MAX_PLAYERS:
@@ -571,19 +630,19 @@ func _rpc_query_rooms() -> void:
 	var result: Array = []
 	for code in _rooms:
 		var room: Dictionary = _rooms[code]
-		if room["started"]:
-			continue
 		var total: int = room["players"].size()
 		if total >= MAX_PLAYERS:
-			continue
+			continue  # Truly full — no room for anyone
 		var creator_id: int = room["creator"]
 		var creator_name: String = players[creator_id].get("name", "?") if creator_id in players else "?"
+		var spectate_only: bool = room["started"]
 		result.append({
 			"code": code,
-			"players": total - room["bots"].size(),
+			"players": total - room["bots"].size() - room.get("spectators", []).size(),
 			"bots": room["bots"].size(),
 			"max": MAX_PLAYERS,
 			"creator": creator_name,
+			"spectate_only": spectate_only,
 		})
 	_rpc_rooms_list.rpc_id(sender, result)
 
@@ -704,12 +763,14 @@ func _rpc_assign_slot(slot: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _rpc_room_created(code: String) -> void:
+	room_scores.clear()
 	current_room = code
 	room_created.emit(code)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _rpc_room_joined(code: String) -> void:
+	room_scores.clear()
 	current_room = code
 	room_joined.emit(code)
 
@@ -729,6 +790,7 @@ func _rpc_lobby_update(lobby_data: Array[Dictionary], room_code: String, _creato
 			"slot": entry["slot"],
 			"room": room_code,
 			"is_bot": entry.get("is_bot", false),
+			"spectator": entry.get("spectator", false),
 		}
 	current_room = room_code
 	lobby_updated.emit()
@@ -774,13 +836,13 @@ func _rpc_game_request_launch(slot: int, direction: Vector3, power: float) -> vo
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rpc_game_activate_powerup(slot: int, powerup_type: String) -> void:
+func _rpc_game_activate_powerup(slot: int, powerup_type: String, cursor_world_pos: Vector3 = Vector3.ZERO, portal_yaw: float = 0.0) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	var gm := _get_game_manager_for_peer(sender)
 	if gm:
-		gm.server_handle_activate_powerup(sender, slot, powerup_type)
+		gm.server_handle_activate_powerup(sender, slot, powerup_type, cursor_world_pos, portal_yaw)
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -837,10 +899,10 @@ func send_ping() -> void:
 # --- Server -> Client game RPCs ---
 
 @rpc("authority", "call_remote", "reliable")
-func _rpc_game_spawn_balls(spawn_data: Array[Dictionary], alive: Array[int]) -> void:
+func _rpc_game_spawn_balls(spawn_data: Array[Dictionary], alive: Array[int], player_count: int) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
-		gm.client_receive_spawn_balls(spawn_data, alive)
+		gm.client_receive_spawn_balls(spawn_data, alive, player_count)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -929,24 +991,45 @@ func _rpc_game_powerup_armed(slot: int, type: int) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func _rpc_game_speed_boost(slot: int) -> void:
+func _rpc_game_swap_effect(slot_a: int, old_ax: float, old_az: float, slot_b: int, old_bx: float, old_bz: float) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
-		gm.client_receive_speed_boost(slot)
+		gm.client_receive_swap_effect(slot_a, old_ax, old_az, slot_b, old_bx, old_bz)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _rpc_game_anchor_effect(slot: int) -> void:
+func _rpc_game_portal_placed(placer_slot: int, portal_idx: int, pos_x: float, pos_z: float, yaw: float = 0.0) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
-		gm.client_receive_anchor_effect(slot)
+		gm.client_receive_portal_placed(placer_slot, portal_idx, pos_x, pos_z, yaw)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _rpc_game_portal_transit(ball_slot: int, from_x: float, from_z: float, to_x: float, to_z: float) -> void:
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_portal_transit(ball_slot, from_x, from_z, to_x, to_z)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _rpc_game_anchor_trap_placed(slot: int, pos_x: float, pos_z: float) -> void:
+func _rpc_game_portals_expired(placer_slot: int) -> void:
 	var gm := _get_client_game_manager()
 	if gm:
-		gm.client_receive_anchor_trap_placed(slot, pos_x, pos_z)
+		gm.client_receive_portals_expired(placer_slot)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_game_gravity_well_placed(placer_slot: int, pos_x: float, pos_z: float, duration: float) -> void:
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_gravity_well_placed(placer_slot, pos_x, pos_z, duration)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_game_gravity_well_expired(placer_slot: int) -> void:
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_gravity_well_expired(placer_slot)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -961,3 +1044,60 @@ func _rpc_game_collision_effect(pos: Vector3, color: Color, intensity: float, so
 	var gm := _get_client_game_manager()
 	if gm:
 		gm.client_receive_collision_effect(pos, color, intensity, sound_slot, is_wall, sound_speed)
+
+
+# --- Spectator RPCs ---
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_game_request_join_round(room_code: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if room_code not in _rooms:
+		return
+	var room: Dictionary = _rooms[room_code]
+	if sender not in room.get("spectators", []):
+		return
+	if sender not in room.get("pending_players", []):
+		room["pending_players"].append(sender)
+		print("[SERVER] Room %s: Peer %d queued for next round" % [room_code, sender])
+	_rpc_game_queued_for_round.rpc_id(sender)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_game_queued_for_round() -> void:
+	var gm := _get_client_game_manager()
+	if gm:
+		gm.client_receive_queued_for_round()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_game_request_skip_round(room_code: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if room_code not in _rooms:
+		return
+	var room: Dictionary = _rooms[room_code]
+	var gm: Node = room.get("game_manager")
+	if gm == null or not is_instance_valid(gm):
+		return
+	# Validate requester is eliminated and only bots are alive
+	var gm_node := gm as Node
+	var bot_slots: Array = room.get("bot_slots", [])
+	var alive: Array = gm_node.alive_players
+	# Requester's slot must not be in alive_players
+	var requester_slot := -1
+	var slot_map: Dictionary = gm_node.slot_to_peer
+	for slot in slot_map:
+		if slot_map[slot] == sender:
+			requester_slot = slot
+			break
+	if requester_slot in alive:
+		return  # Requester is still playing
+	# All alive players must be bots
+	for slot in alive:
+		if slot not in bot_slots:
+			return  # A human is still alive
+	print("[SERVER] Room %s: Peer %d requested skip round — all alive are bots, restarting" % [room_code, sender])
+	gm_node.call("_server_restart_round")

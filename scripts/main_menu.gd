@@ -12,12 +12,15 @@ var online_button: Button
 var bot_count_label: Label
 var _bot_count: int = 2
 var name_input: LineEdit
+var powerups_status: Label
+var _powerup_checkboxes: Dictionary = {}  # type -> CheckBox
 
 # Online panel
 var ip_input: LineEdit
 var create_button: Button
 var join_button: Button
 var online_status: Label
+var online_powerups_summary: Label
 
 # Rooms browser panel
 var rooms_panel: VBoxContainer
@@ -41,6 +44,7 @@ var countdown_label: Label
 
 var _is_joining: bool = false
 var _current_room_code: String = ""
+var _pending_enabled_powerups: Array[int] = []
 
 # Music controls
 var _music_mute_btn: Button
@@ -49,12 +53,16 @@ var _music_vol_down_btn: Button
 var _music_vol_up_btn: Button
 
 var player_colors: Array[Color] = [
-	Color(0.9, 0.15, 0.15),
-	Color(0.15, 0.4, 0.9),
-	Color(0.9, 0.75, 0.1),
-	Color(0.15, 0.8, 0.3),
+	Color(0.9, 0.15, 0.15),   # 0 Red
+	Color(0.15, 0.4, 0.9),    # 1 Blue
+	Color(0.9, 0.75, 0.1),    # 2 Yellow
+	Color(0.15, 0.8, 0.3),    # 3 Green
+	Color(0.85, 0.4, 0.9),    # 4 Purple
+	Color(0.9, 0.5, 0.1),     # 5 Orange
+	Color(0.1, 0.85, 0.85),   # 6 Cyan
+	Color(0.9, 0.9, 0.9),     # 7 White
 ]
-var player_color_names: Array[String] = ["Red", "Blue", "Yellow", "Green"]
+var player_color_names: Array[String] = ["Red", "Blue", "Yellow", "Green", "Purple", "Orange", "Cyan", "White"]
 
 
 var _auto_create: bool = false
@@ -206,7 +214,7 @@ func _build_main_panel(root: VBoxContainer) -> void:
 	bot_plus.custom_minimum_size = Vector2(40, 50)
 	bot_plus.add_theme_font_size_override("font_size", 20)
 	bot_plus.pressed.connect(func() -> void:
-		_bot_count = mini(_bot_count + 1, 3)
+		_bot_count = mini(_bot_count + 1, NetworkManager.MAX_PLAYERS - 1)
 		bot_count_label.text = "%d" % _bot_count
 	)
 	solo_row.add_child(bot_plus)
@@ -217,6 +225,39 @@ func _build_main_panel(root: VBoxContainer) -> void:
 	solo_hint.add_theme_font_size_override("font_size", 14)
 	solo_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 	solo_row.add_child(solo_hint)
+
+	var pu_sep := HSeparator.new()
+	main_panel.add_child(pu_sep)
+
+	var pu_title := Label.new()
+	pu_title.text = "Enabled Powerups (Solo + Rooms You Create):"
+	pu_title.add_theme_font_size_override("font_size", 14)
+	pu_title.add_theme_color_override("font_color", Color(0.72, 0.72, 0.78))
+	main_panel.add_child(pu_title)
+
+	var pu_grid := GridContainer.new()
+	pu_grid.columns = 2
+	pu_grid.add_theme_constant_override("h_separation", 10)
+	pu_grid.add_theme_constant_override("v_separation", 4)
+	main_panel.add_child(pu_grid)
+
+	for t in [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL]:
+		var cb := CheckBox.new()
+		cb.text = "%s %s" % [Powerup.get_symbol(t), Powerup.get_powerup_name(t)]
+		cb.button_pressed = true
+		cb.add_theme_font_size_override("font_size", 14)
+		cb.toggled.connect(func(_pressed: bool) -> void:
+			powerups_status.text = ""
+			_update_online_powerup_summary()
+		)
+		_powerup_checkboxes[t] = cb
+		pu_grid.add_child(cb)
+
+	powerups_status = Label.new()
+	powerups_status.text = ""
+	powerups_status.add_theme_font_size_override("font_size", 13)
+	powerups_status.add_theme_color_override("font_color", Color(1, 0.4, 0.4))
+	main_panel.add_child(powerups_status)
 
 	# Online button
 	online_button = Button.new()
@@ -246,8 +287,8 @@ func _build_online_panel(root: VBoxContainer) -> void:
 	online_panel.add_child(ip_label)
 
 	ip_input = LineEdit.new()
-	ip_input.placeholder_text = "dp.900dfe11a-media.pp.ua"
-	ip_input.text = "dp.900dfe11a-media.pp.ua"
+	ip_input.placeholder_text = "games.900dfe11a-media.pp.ua"
+	ip_input.text = "games.900dfe11a-media.pp.ua"
 	ip_input.custom_minimum_size = Vector2(0, 42)
 	ip_input.add_theme_font_size_override("font_size", 18)
 	online_panel.add_child(ip_input)
@@ -276,6 +317,13 @@ func _build_online_panel(root: VBoxContainer) -> void:
 	online_status.add_theme_font_size_override("font_size", 14)
 	online_status.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	online_panel.add_child(online_status)
+
+	online_powerups_summary = Label.new()
+	online_powerups_summary.text = ""
+	online_powerups_summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	online_powerups_summary.add_theme_font_size_override("font_size", 13)
+	online_powerups_summary.add_theme_color_override("font_color", Color(0.55, 0.75, 0.95))
+	online_panel.add_child(online_powerups_summary)
 
 	var back_btn := Button.new()
 	back_btn.text = "BACK"
@@ -477,6 +525,7 @@ func _show_online_panel() -> void:
 	connect_panel.visible = false
 	lobby_panel.visible = false
 	online_status.text = ""
+	_update_online_powerup_summary()
 	create_button.disabled = false
 	join_button.disabled = false
 
@@ -516,7 +565,12 @@ func _on_solo_pressed() -> void:
 	var player_name := name_input.text.strip_edges()
 	if player_name.is_empty():
 		player_name = "Player"
-	NetworkManager.start_single_player(player_name, _bot_count)
+	var selected := _get_selected_powerups()
+	if selected.is_empty():
+		powerups_status.text = "Select at least one powerup"
+		return
+	powerups_status.text = ""
+	NetworkManager.start_single_player(player_name, _bot_count, selected)
 
 
 func _on_online_pressed() -> void:
@@ -530,11 +584,19 @@ func _on_online_back_pressed() -> void:
 func _on_create_pressed() -> void:
 	var ip := ip_input.text.strip_edges()
 	if ip.is_empty():
-		ip = "dp.900dfe11a-media.pp.ua"
+		ip = "games.900dfe11a-media.pp.ua"
 
 	var player_name := name_input.text.strip_edges()
 	if player_name.is_empty():
 		player_name = "Player"
+	var selected := _get_selected_powerups()
+	if selected.is_empty():
+		powerups_status.text = "Select at least one powerup"
+		online_status.text = "Cannot create room with no powerups selected"
+		online_status.add_theme_color_override("font_color", Color(1, 0.3, 0.3))
+		return
+	powerups_status.text = ""
+	_pending_enabled_powerups = selected
 
 	create_button.disabled = true
 	join_button.disabled = true
@@ -548,7 +610,7 @@ func _on_create_pressed() -> void:
 func _on_join_pressed() -> void:
 	var ip := ip_input.text.strip_edges()
 	if ip.is_empty():
-		ip = "dp.900dfe11a-media.pp.ua"
+		ip = "games.900dfe11a-media.pp.ua"
 
 	var player_name := name_input.text.strip_edges()
 	if player_name.is_empty():
@@ -633,8 +695,30 @@ func _on_server_connected(_peer_id: int) -> void:
 			NetworkManager.query_rooms()
 	else:
 		# Creating room - send request immediately
-		NetworkManager.create_room()
+		NetworkManager.create_room(_pending_enabled_powerups)
 		online_status.text = "Creating room..."
+
+
+func _get_selected_powerups() -> Array[int]:
+	var selected: Array[int] = []
+	for t in [Powerup.Type.BOMB, Powerup.Type.FREEZE, Powerup.Type.PORTAL_TRAP, Powerup.Type.SWAP, Powerup.Type.GRAVITY_WELL]:
+		var cb: CheckBox = _powerup_checkboxes.get(t, null)
+		if cb != null and cb.button_pressed:
+			selected.append(t)
+	return selected
+
+
+func _update_online_powerup_summary() -> void:
+	if online_powerups_summary == null:
+		return
+	var selected := _get_selected_powerups()
+	if selected.is_empty():
+		online_powerups_summary.text = "Enabled powerups: none selected"
+		return
+	var names: Array[String] = []
+	for t in selected:
+		names.append(Powerup.get_powerup_name(t))
+	online_powerups_summary.text = "Enabled powerups: %s" % ", ".join(names)
 
 
 func _on_connection_failed() -> void:
@@ -696,7 +780,19 @@ func _on_rooms_list_received(rooms: Array) -> void:
 		_rooms_status.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 		return
 
-	_rooms_status.text = "%d room(s) available" % rooms.size()
+	var joinable_count: int = 0
+	var spectate_count: int = 0
+	for room in rooms:
+		if room.get("spectate_only", false):
+			spectate_count += 1
+		else:
+			joinable_count += 1
+	if joinable_count > 0 and spectate_count > 0:
+		_rooms_status.text = "%d joinable, %d in progress" % [joinable_count, spectate_count]
+	elif joinable_count > 0:
+		_rooms_status.text = "%d room(s) available" % joinable_count
+	else:
+		_rooms_status.text = "%d game(s) in progress (spectate only)" % spectate_count
 	_rooms_status.add_theme_color_override("font_color", Color(0.5, 0.9, 0.5))
 
 	for room in rooms:
@@ -705,22 +801,29 @@ func _on_rooms_list_received(rooms: Array) -> void:
 		var bot_count: int = room["bots"]
 		var max_count: int = room["max"]
 		var creator: String = room["creator"]
+		var spectate_only: bool = room.get("spectate_only", false)
 
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 
 		var info := Label.new()
 		var bot_str := " +%db" % bot_count if bot_count > 0 else ""
-		info.text = "%s's room  %d%s/%d" % [creator, human_count, bot_str, max_count]
+		var status_str := "  [in game]" if spectate_only else ""
+		info.text = "%s's room  %d%s/%d%s" % [creator, human_count, bot_str, max_count, status_str]
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_font_size_override("font_size", 17)
-		info.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+		if spectate_only:
+			info.add_theme_color_override("font_color", Color(0.7, 0.7, 0.85))
+		else:
+			info.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
 		row.add_child(info)
 
 		var join_btn := Button.new()
-		join_btn.text = "JOIN"
-		join_btn.custom_minimum_size = Vector2(70, 36)
+		join_btn.text = "SPECTATE" if spectate_only else "JOIN"
+		join_btn.custom_minimum_size = Vector2(86, 36) if spectate_only else Vector2(70, 36)
 		join_btn.add_theme_font_size_override("font_size", 15)
+		if spectate_only:
+			join_btn.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
 		var room_code := code  # Capture for lambda
 		join_btn.pressed.connect(func() -> void:
 			_on_room_row_join(room_code)
@@ -766,10 +869,10 @@ func _on_lobby_updated() -> void:
 		start_button.disabled = count < 2
 		add_bot_button.visible = count < NetworkManager.MAX_PLAYERS
 		if count < 2:
-			lobby_status.text = "Need at least 2 players to start"
+			lobby_status.text = "Need at least 2 players to start  (%d/%d)" % [count, NetworkManager.MAX_PLAYERS]
 			lobby_status.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 		else:
-			lobby_status.text = "%d players ready!" % count
+			lobby_status.text = "%d/%d players — ready to start!" % [count, NetworkManager.MAX_PLAYERS]
 			lobby_status.add_theme_color_override("font_color", Color(0.3, 0.9, 0.3))
 			# Auto-start when enough players joined
 			if _auto_start:
@@ -777,6 +880,8 @@ func _on_lobby_updated() -> void:
 				_on_start_pressed()
 	else:
 		add_bot_button.visible = false
+		lobby_status.text = "Waiting for host...  (%d/%d)" % [count, NetworkManager.MAX_PLAYERS]
+		lobby_status.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 
 
 func _on_countdown_tick(seconds_left: int) -> void:
@@ -799,12 +904,18 @@ func _rebuild_player_list() -> void:
 		child.queue_free()
 
 	var is_creator := NetworkManager.is_room_creator()
+	var has_spectators := false
 
 	for peer_id: int in NetworkManager.players:
 		var info: Dictionary = NetworkManager.players[peer_id]
 		var slot: int = info["slot"]
 		var pname: String = info["name"]
 		var is_bot: bool = info.get("is_bot", false)
+		var is_spectator: bool = info.get("spectator", false)
+
+		if is_spectator:
+			has_spectators = true
+			continue  # Spectators shown in a separate section below
 
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 10)
@@ -846,23 +957,34 @@ func _rebuild_player_list() -> void:
 
 		player_list_container.add_child(row)
 
-	# Empty slots
-	var filled := NetworkManager.get_player_count()
-	for i in range(filled, NetworkManager.MAX_PLAYERS):
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 10)
+	# Spectators section
+	if has_spectators:
+		var sep_lbl := Label.new()
+		sep_lbl.text = "Spectating:"
+		sep_lbl.add_theme_font_size_override("font_size", 14)
+		sep_lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.5))
+		player_list_container.add_child(sep_lbl)
 
-		var dot := ColorRect.new()
-		dot.custom_minimum_size = Vector2(18, 18)
-		dot.color = Color(0.2, 0.2, 0.2, 0.5)
-		row.add_child(dot)
+		for peer_id: int in NetworkManager.players:
+			var info: Dictionary = NetworkManager.players[peer_id]
+			if not info.get("spectator", false):
+				continue
+			var pname: String = info["name"]
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 10)
 
-		var label := Label.new()
-		label.text = "(empty)"
-		label.add_theme_font_size_override("font_size", 18)
-		label.add_theme_color_override("font_color", Color(0.3, 0.3, 0.3))
-		row.add_child(label)
-		player_list_container.add_child(row)
+			var dot := ColorRect.new()
+			dot.custom_minimum_size = Vector2(18, 18)
+			dot.color = Color(0.3, 0.3, 0.35, 0.6)
+			row.add_child(dot)
+
+			var label := Label.new()
+			var you_str := "  <- You" if peer_id == NetworkManager.my_peer_id else ""
+			label.text = "%s (spectating)%s" % [pname, you_str]
+			label.add_theme_font_size_override("font_size", 17)
+			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+			row.add_child(label)
+			player_list_container.add_child(row)
 
 
 # --- Room code copy ---

@@ -22,11 +22,13 @@ set -e
 #   ./build.sh web-debug server-debug --deploy
 
 REMOTE_HOST="andri@192.168.0.108"
-REMOTE_BUILDS_DIR="~/caddy/sites/deadly-pool"
-REMOTE_WEB_DIR="~/caddy/sites/deadly-pool/web"
+REMOTE_BUILDS_DIR="~/games/downloads/dp"
+REMOTE_WEB_DIR="~/games/dp/web"
 IMAGE_NAME="deadly-pool"
 IMAGE_NAME_DEBUG="deadly-pool-debug"
 CONTAINER_NAME="deadly-pool-server"
+ADMIN_IMAGE_NAME="deadly-pool-admin"
+ADMIN_CONTAINER_NAME="deadly-pool-admin"
 
 # Parse args
 DO_DEPLOY=false
@@ -91,7 +93,12 @@ echo "Targets:${TARGETS}"
 $DO_DEPLOY && echo "Deploy: yes"
 echo ""
 
-# 2. Stamp version and export
+# 2. Run tests
+echo "Running tests..."
+./run_tests.sh
+echo ""
+
+# 3. Stamp version and export
 echo "Exporting..."
 
 # Release exports — stamp clean version
@@ -146,7 +153,7 @@ if $BUILD_LINUX || $BUILD_WIN; then
   "downloads": {
     "linux": "deadly-pool-${VER}-linux.zip",
     "windows": "deadly-pool-${VER}-windows.zip",
-    "web": "https://dp.900dfe11a-media.pp.ua/"
+    "web": "https://games.900dfe11a-media.pp.ua/dp"
   }
 }
 EOF
@@ -192,6 +199,7 @@ if $BUILD_WEB; then
     echo "Uploading web client..."
     ssh "$REMOTE_HOST" "mkdir -p ${REMOTE_WEB_DIR}"
     scp export/web/* "$REMOTE_HOST:${REMOTE_WEB_DIR}/"
+    ssh "$REMOTE_HOST" "sed -i 's|<meta charset=\"utf-8\">|<meta charset=\"utf-8\"><base href=\"/dp/\">|' ${REMOTE_WEB_DIR}/deadly-pool.html"
     echo "Web client uploaded."
 fi
 
@@ -200,6 +208,7 @@ if $BUILD_WEB_DEBUG; then
     echo "Uploading debug web client..."
     ssh "$REMOTE_HOST" "mkdir -p ${REMOTE_WEB_DIR}"
     scp export/web-debug/* "$REMOTE_HOST:${REMOTE_WEB_DIR}/"
+    ssh "$REMOTE_HOST" "sed -i 's|<meta charset=\"utf-8\">|<meta charset=\"utf-8\"><base href=\"/dp/\">|' ${REMOTE_WEB_DIR}/deadly-pool.html"
     echo "Debug web client uploaded."
 fi
 
@@ -231,6 +240,35 @@ docker run -d \
 docker image prune -f
 EOF
     rm -f "$TAR_FILE"
+fi
+
+# Admin dashboard (always paired with release server)
+if $BUILD_SERVER; then
+    echo "Building admin Docker image..."
+    docker build -t "${ADMIN_IMAGE_NAME}:latest" ./admin
+
+    ADMIN_TAR="/tmp/${ADMIN_IMAGE_NAME}.tar"
+    echo "Saving admin image..."
+    docker save "${ADMIN_IMAGE_NAME}:latest" -o "$ADMIN_TAR"
+
+    echo "Transferring admin image to ${REMOTE_HOST}..."
+    scp "$ADMIN_TAR" "$REMOTE_HOST:/tmp/"
+
+    echo "Loading admin image and restarting container..."
+    ssh "$REMOTE_HOST" bash <<EOF
+set -e
+docker load -i /tmp/${ADMIN_IMAGE_NAME}.tar
+rm /tmp/${ADMIN_IMAGE_NAME}.tar
+docker stop ${ADMIN_CONTAINER_NAME} 2>/dev/null || true
+docker rm ${ADMIN_CONTAINER_NAME} 2>/dev/null || true
+docker run -d \
+  --name ${ADMIN_CONTAINER_NAME} \
+  --restart unless-stopped \
+  --network homelab-apps \
+  ${ADMIN_IMAGE_NAME}:latest
+docker image prune -f
+EOF
+    rm -f "$ADMIN_TAR"
 fi
 
 # Debug server (same container name as release — replaces it)
@@ -269,7 +307,7 @@ echo ""
 echo "=== Deploy complete! ==="
 $BUILD_SERVER       && echo "  Server (release):  restarted with v${VER}"
 $BUILD_SERVER_DEBUG && echo "  Server (debug):    restarted with v${VER} (DEBUG)  [replaces release]"
-$BUILD_WEB          && echo "  Web (release):     https://dp.900dfe11a-media.pp.ua/"
-$BUILD_WEB_DEBUG    && echo "  Web (debug):       https://dp.900dfe11a-media.pp.ua/  [replaces release]"
-($BUILD_LINUX || $BUILD_WIN) && echo "  Builds:            https://sites.900dfe11a-media.pp.ua/deadly-pool/"
-echo "  Admin:             https://admin-dp.900dfe11a-media.pp.ua/"
+$BUILD_SERVER       && echo "  Admin (dashboard): restarted  →  https://games.900dfe11a-media.pp.ua/dp/admin"
+$BUILD_WEB          && echo "  Web (release):     https://games.900dfe11a-media.pp.ua/dp"
+$BUILD_WEB_DEBUG    && echo "  Web (debug):       https://games.900dfe11a-media.pp.ua/dp  [replaces release]"
+($BUILD_LINUX || $BUILD_WIN) && echo "  Builds:            https://games.900dfe11a-media.pp.ua/downloads/dp"
