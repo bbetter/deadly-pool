@@ -69,6 +69,10 @@ var _auto_create: bool = false
 var _auto_join: String = ""
 var _auto_start: bool = false
 
+func _is_mobile() -> bool:
+	return DisplayServer.is_touchscreen_available()
+
+
 func _ready() -> void:
 	print("[MENU] Deadly Pool loaded. Renderer: %s | OS: %s" % [RenderingServer.get_video_adapter_name(), OS.get_name()])
 	if NetworkManager.is_server_mode:
@@ -92,7 +96,8 @@ func _ready() -> void:
 	NetworkManager.countdown_tick.connect(_on_countdown_tick)
 	NetworkManager.game_starting.connect(_on_game_starting)
 
-	_parse_auto_args()
+	if not _parse_web_url():
+		_parse_auto_args()
 
 
 func _build_ui() -> void:
@@ -161,6 +166,11 @@ func _build_main_panel(root: VBoxContainer) -> void:
 	main_panel.add_theme_constant_override("separation", 12)
 	root.add_child(main_panel)
 
+	var ph := 64 if _is_mobile() else 50   # primary button height
+	var sh := 52 if _is_mobile() else 40   # secondary button height
+	var ih := 56 if _is_mobile() else 42   # input height
+	var pfs := 22 if _is_mobile() else 20  # primary font size
+
 	var name_label := Label.new()
 	name_label.text = "Your Name:"
 	name_label.add_theme_font_size_override("font_size", 16)
@@ -169,7 +179,7 @@ func _build_main_panel(root: VBoxContainer) -> void:
 	name_input = LineEdit.new()
 	name_input.placeholder_text = "Player"
 	name_input.text = "Player"
-	name_input.custom_minimum_size = Vector2(0, 42)
+	name_input.custom_minimum_size = Vector2(0, ih)
 	name_input.add_theme_font_size_override("font_size", 18)
 	main_panel.add_child(name_input)
 
@@ -184,16 +194,16 @@ func _build_main_panel(root: VBoxContainer) -> void:
 
 	solo_button = Button.new()
 	solo_button.text = "PLAY SOLO"
-	solo_button.custom_minimum_size = Vector2(0, 50)
+	solo_button.custom_minimum_size = Vector2(0, ph)
 	solo_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	solo_button.add_theme_font_size_override("font_size", 20)
+	solo_button.add_theme_font_size_override("font_size", pfs)
 	solo_button.pressed.connect(_on_solo_pressed)
 	solo_row.add_child(solo_button)
 
 	var bot_minus := Button.new()
 	bot_minus.text = "-"
-	bot_minus.custom_minimum_size = Vector2(40, 50)
-	bot_minus.add_theme_font_size_override("font_size", 20)
+	bot_minus.custom_minimum_size = Vector2(52 if _is_mobile() else 40, ph)
+	bot_minus.add_theme_font_size_override("font_size", pfs)
 	bot_minus.pressed.connect(func() -> void:
 		_bot_count = maxi(_bot_count - 1, 1)
 		bot_count_label.text = "%d" % _bot_count
@@ -211,8 +221,8 @@ func _build_main_panel(root: VBoxContainer) -> void:
 
 	var bot_plus := Button.new()
 	bot_plus.text = "+"
-	bot_plus.custom_minimum_size = Vector2(40, 50)
-	bot_plus.add_theme_font_size_override("font_size", 20)
+	bot_plus.custom_minimum_size = Vector2(52 if _is_mobile() else 40, ph)
+	bot_plus.add_theme_font_size_override("font_size", pfs)
 	bot_plus.pressed.connect(func() -> void:
 		_bot_count = mini(_bot_count + 1, NetworkManager.MAX_PLAYERS - 1)
 		bot_count_label.text = "%d" % _bot_count
@@ -245,7 +255,8 @@ func _build_main_panel(root: VBoxContainer) -> void:
 		var cb := CheckBox.new()
 		cb.text = "%s %s" % [Powerup.get_symbol(t), Powerup.get_powerup_name(t)]
 		cb.button_pressed = true
-		cb.add_theme_font_size_override("font_size", 14)
+		cb.custom_minimum_size = Vector2(0, 40 if _is_mobile() else 0)
+		cb.add_theme_font_size_override("font_size", 16 if _is_mobile() else 14)
 		cb.toggled.connect(func(_pressed: bool) -> void:
 			powerups_status.text = ""
 			_update_online_powerup_summary()
@@ -262,8 +273,8 @@ func _build_main_panel(root: VBoxContainer) -> void:
 	# Online button
 	online_button = Button.new()
 	online_button.text = "PLAY ONLINE"
-	online_button.custom_minimum_size = Vector2(0, 50)
-	online_button.add_theme_font_size_override("font_size", 20)
+	online_button.custom_minimum_size = Vector2(0, ph)
+	online_button.add_theme_font_size_override("font_size", pfs)
 	online_button.pressed.connect(_on_online_pressed)
 	main_panel.add_child(online_button)
 
@@ -273,6 +284,10 @@ func _build_online_panel(root: VBoxContainer) -> void:
 	online_panel.add_theme_constant_override("separation", 12)
 	online_panel.visible = false
 	root.add_child(online_panel)
+
+	var ph := 64 if _is_mobile() else 50
+	var sh := 52 if _is_mobile() else 40
+	var pfs := 22 if _is_mobile() else 20
 
 	var header := Label.new()
 	header.text = "PLAY ONLINE"
@@ -284,6 +299,7 @@ func _build_online_panel(root: VBoxContainer) -> void:
 	var ip_label := Label.new()
 	ip_label.text = "Server:"
 	ip_label.add_theme_font_size_override("font_size", 16)
+	ip_label.visible = not _is_mobile()
 	online_panel.add_child(ip_label)
 
 	ip_input = LineEdit.new()
@@ -291,6 +307,7 @@ func _build_online_panel(root: VBoxContainer) -> void:
 	ip_input.text = "games.900dfe11a-media.pp.ua"
 	ip_input.custom_minimum_size = Vector2(0, 42)
 	ip_input.add_theme_font_size_override("font_size", 18)
+	ip_input.visible = not _is_mobile()
 	online_panel.add_child(ip_input)
 
 	var btn_spacer := Control.new()
@@ -299,15 +316,15 @@ func _build_online_panel(root: VBoxContainer) -> void:
 
 	create_button = Button.new()
 	create_button.text = "CREATE ROOM"
-	create_button.custom_minimum_size = Vector2(0, 50)
-	create_button.add_theme_font_size_override("font_size", 20)
+	create_button.custom_minimum_size = Vector2(0, ph)
+	create_button.add_theme_font_size_override("font_size", pfs)
 	create_button.pressed.connect(_on_create_pressed)
 	online_panel.add_child(create_button)
 
 	join_button = Button.new()
 	join_button.text = "JOIN ROOM"
-	join_button.custom_minimum_size = Vector2(0, 50)
-	join_button.add_theme_font_size_override("font_size", 20)
+	join_button.custom_minimum_size = Vector2(0, ph)
+	join_button.add_theme_font_size_override("font_size", pfs)
 	join_button.pressed.connect(_on_join_pressed)
 	online_panel.add_child(join_button)
 
@@ -327,7 +344,7 @@ func _build_online_panel(root: VBoxContainer) -> void:
 
 	var back_btn := Button.new()
 	back_btn.text = "BACK"
-	back_btn.custom_minimum_size = Vector2(0, 40)
+	back_btn.custom_minimum_size = Vector2(0, sh)
 	back_btn.add_theme_font_size_override("font_size", 16)
 	back_btn.pressed.connect(_on_online_back_pressed)
 	online_panel.add_child(back_btn)
@@ -338,6 +355,8 @@ func _build_rooms_panel(root: VBoxContainer) -> void:
 	rooms_panel.add_theme_constant_override("separation", 10)
 	rooms_panel.visible = false
 	root.add_child(rooms_panel)
+
+	var sh := 52 if _is_mobile() else 40
 
 	var header := Label.new()
 	header.text = "OPEN ROOMS"
@@ -368,21 +387,21 @@ func _build_rooms_panel(root: VBoxContainer) -> void:
 
 	_rooms_refresh_btn = Button.new()
 	_rooms_refresh_btn.text = "REFRESH"
-	_rooms_refresh_btn.custom_minimum_size = Vector2(0, 40)
+	_rooms_refresh_btn.custom_minimum_size = Vector2(0, sh)
 	_rooms_refresh_btn.add_theme_font_size_override("font_size", 16)
 	_rooms_refresh_btn.pressed.connect(_on_rooms_refresh_pressed)
 	rooms_panel.add_child(_rooms_refresh_btn)
 
 	var code_btn := Button.new()
 	code_btn.text = "Enter code manually"
-	code_btn.custom_minimum_size = Vector2(0, 36)
+	code_btn.custom_minimum_size = Vector2(0, sh)
 	code_btn.add_theme_font_size_override("font_size", 15)
 	code_btn.pressed.connect(_show_connect_panel)
 	rooms_panel.add_child(code_btn)
 
 	var back_btn := Button.new()
 	back_btn.text = "BACK"
-	back_btn.custom_minimum_size = Vector2(0, 40)
+	back_btn.custom_minimum_size = Vector2(0, sh)
 	back_btn.add_theme_font_size_override("font_size", 16)
 	back_btn.pressed.connect(_on_rooms_back_pressed)
 	rooms_panel.add_child(back_btn)
@@ -394,6 +413,9 @@ func _build_connect_panel(root: VBoxContainer) -> void:
 	connect_panel.visible = false
 	root.add_child(connect_panel)
 
+	var ph := 64 if _is_mobile() else 50
+	var sh := 52 if _is_mobile() else 40
+
 	var code_label := Label.new()
 	code_label.text = "Enter Room Code:"
 	code_label.add_theme_font_size_override("font_size", 18)
@@ -402,7 +424,7 @@ func _build_connect_panel(root: VBoxContainer) -> void:
 
 	code_input = LineEdit.new()
 	code_input.placeholder_text = "XXXXX"
-	code_input.custom_minimum_size = Vector2(0, 50)
+	code_input.custom_minimum_size = Vector2(0, ph)
 	code_input.add_theme_font_size_override("font_size", 28)
 	code_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	code_input.max_length = 5
@@ -410,8 +432,8 @@ func _build_connect_panel(root: VBoxContainer) -> void:
 
 	action_button = Button.new()
 	action_button.text = "JOIN"
-	action_button.custom_minimum_size = Vector2(0, 50)
-	action_button.add_theme_font_size_override("font_size", 20)
+	action_button.custom_minimum_size = Vector2(0, ph)
+	action_button.add_theme_font_size_override("font_size", 22 if _is_mobile() else 20)
 	action_button.pressed.connect(_on_code_submit)
 	connect_panel.add_child(action_button)
 
@@ -424,7 +446,7 @@ func _build_connect_panel(root: VBoxContainer) -> void:
 
 	back_button = Button.new()
 	back_button.text = "BACK"
-	back_button.custom_minimum_size = Vector2(0, 40)
+	back_button.custom_minimum_size = Vector2(0, sh)
 	back_button.add_theme_font_size_override("font_size", 16)
 	back_button.pressed.connect(_on_connect_back_pressed)
 	connect_panel.add_child(back_button)
@@ -435,6 +457,9 @@ func _build_lobby_panel(root: VBoxContainer) -> void:
 	lobby_panel.add_theme_constant_override("separation", 10)
 	lobby_panel.visible = false
 	root.add_child(lobby_panel)
+
+	var ph := 64 if _is_mobile() else 50
+	var sh := 52 if _is_mobile() else 40
 
 	room_code_label = Label.new()
 	room_code_label.text = "Room: -----"
@@ -447,7 +472,10 @@ func _build_lobby_panel(root: VBoxContainer) -> void:
 	lobby_panel.add_child(room_code_label)
 
 	var share_hint := Label.new()
-	share_hint.text = "Click code to copy!"
+	if OS.get_name() == "Web":
+		share_hint.text = "Tap to copy invite link!" if _is_mobile() else "Click to copy invite link!"
+	else:
+		share_hint.text = "Tap code to copy!" if _is_mobile() else "Click code to copy!"
 	share_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	share_hint.add_theme_font_size_override("font_size", 13)
 	share_hint.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
@@ -472,7 +500,7 @@ func _build_lobby_panel(root: VBoxContainer) -> void:
 	# Add bot button (creator only, hidden for joiners)
 	add_bot_button = Button.new()
 	add_bot_button.text = "+ ADD BOT"
-	add_bot_button.custom_minimum_size = Vector2(0, 40)
+	add_bot_button.custom_minimum_size = Vector2(0, sh)
 	add_bot_button.add_theme_font_size_override("font_size", 16)
 	add_bot_button.pressed.connect(_on_add_bot_pressed)
 	add_bot_button.visible = false
@@ -488,8 +516,8 @@ func _build_lobby_panel(root: VBoxContainer) -> void:
 
 	start_button = Button.new()
 	start_button.text = "START GAME"
-	start_button.custom_minimum_size = Vector2(0, 50)
-	start_button.add_theme_font_size_override("font_size", 20)
+	start_button.custom_minimum_size = Vector2(0, ph)
+	start_button.add_theme_font_size_override("font_size", 22 if _is_mobile() else 20)
 	start_button.pressed.connect(_on_start_pressed)
 	lobby_panel.add_child(start_button)
 
@@ -502,7 +530,7 @@ func _build_lobby_panel(root: VBoxContainer) -> void:
 
 	leave_button = Button.new()
 	leave_button.text = "LEAVE ROOM"
-	leave_button.custom_minimum_size = Vector2(0, 40)
+	leave_button.custom_minimum_size = Vector2(0, sh)
 	leave_button.add_theme_font_size_override("font_size", 16)
 	leave_button.pressed.connect(_on_leave_pressed)
 	lobby_panel.add_child(leave_button)
@@ -695,7 +723,7 @@ func _on_server_connected(_peer_id: int) -> void:
 			NetworkManager.query_rooms()
 	else:
 		# Creating room - send request immediately
-		NetworkManager.create_room(_pending_enabled_powerups)
+		NetworkManager.create_room({"powerups": _pending_enabled_powerups})
 		online_status.text = "Creating room..."
 
 
@@ -820,7 +848,8 @@ func _on_rooms_list_received(rooms: Array) -> void:
 
 		var join_btn := Button.new()
 		join_btn.text = "SPECTATE" if spectate_only else "JOIN"
-		join_btn.custom_minimum_size = Vector2(86, 36) if spectate_only else Vector2(70, 36)
+		var row_btn_h := 48 if _is_mobile() else 36
+		join_btn.custom_minimum_size = Vector2(86, row_btn_h) if spectate_only else Vector2(70, row_btn_h)
 		join_btn.add_theme_font_size_override("font_size", 15)
 		if spectate_only:
 			join_btn.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
@@ -895,7 +924,7 @@ func _on_countdown_tick(seconds_left: int) -> void:
 		countdown_label.text = "GO!"
 
 
-func _on_game_starting() -> void:
+func _on_game_starting(_settings: Dictionary = {}) -> void:
 	countdown_label.text = "Loading..."
 
 
@@ -990,18 +1019,51 @@ func _rebuild_player_list() -> void:
 # --- Room code copy ---
 
 func _on_room_code_clicked(event: InputEvent) -> void:
+	var should_copy := false
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
-			DisplayServer.clipboard_set(_current_room_code)
-			# Flash the label to confirm copy
-			room_code_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0))
-			room_code_label.text = "Copied: %s" % _current_room_code
-			get_tree().create_timer(0.8).timeout.connect(func() -> void:
-				if room_code_label:
-					room_code_label.text = "Room: %s" % _current_room_code
-					room_code_label.add_theme_color_override("font_color", Color(0.3, 0.9, 1.0))
-			)
+		should_copy = mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed
+	elif event is InputEventScreenTouch:
+		var st := event as InputEventScreenTouch
+		should_copy = st.pressed
+	if should_copy:
+		var copy_text: String
+		if OS.get_name() == "Web":
+			var base_url: String = JavaScriptBridge.eval(
+				"window.location.origin + window.location.pathname", true)
+			copy_text = base_url + "?room=" + _current_room_code
+		else:
+			copy_text = _current_room_code
+		DisplayServer.clipboard_set(copy_text)
+		# Flash the label to confirm copy
+		room_code_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0))
+		room_code_label.text = "Link copied!" if OS.get_name() == "Web" else "Copied: %s" % _current_room_code
+		get_tree().create_timer(0.8).timeout.connect(func() -> void:
+			if room_code_label:
+				room_code_label.text = "Room: %s" % _current_room_code
+				room_code_label.add_theme_color_override("font_color", Color(0.3, 0.9, 1.0))
+		)
+
+
+# --- Auto-join from invite link (web only) ---
+# Reads ?room=XXXXX from the page URL and auto-connects + joins that room.
+# Returns true if an auto-join was triggered (caller should skip _parse_auto_args).
+
+func _parse_web_url() -> bool:
+	if OS.get_name() != "Web":
+		return false
+	var search: String = JavaScriptBridge.eval("window.location.search", true)
+	if search.is_empty():
+		return false
+	for part in search.trim_prefix("?").split("&"):
+		if part.begins_with("room="):
+			var code := part.split("=", true, 1)[1].strip_edges().to_upper()
+			if code.length() >= 3:
+				_auto_join = code
+				_is_joining = true
+				_on_join_pressed()
+				return true
+	return false
 
 
 # --- Auto-join from command line ---
@@ -1026,6 +1088,15 @@ func _parse_auto_args() -> void:
 		elif arg == "--auto-start":
 			_auto_start = true
 
+	# Auto-solo / spectate: skip menu (useful for testing)
+	for arg in args:
+		if arg == "--auto-solo":
+			NetworkManager.start_single_player("TestPlayer", 1, [2, 3, 4, 6, 7])
+			return
+		if arg == "--spectate":
+			get_tree().change_scene_to_file.call_deferred("res://scenes/main.tscn")
+			return
+
 	if not _auto_create and _auto_join.is_empty():
 		return
 
@@ -1046,43 +1117,47 @@ func _parse_auto_args() -> void:
 # --- Music controls ---
 
 func _build_music_controls() -> void:
+	var bsz := 44 if _is_mobile() else 32  # button size
+	var bfs := 18 if _is_mobile() else 16  # button font size
+	var row_h := bsz + 8
 	var music_row := HBoxContainer.new()
 	music_row.anchor_left = 0.0
 	music_row.anchor_top = 1.0
 	music_row.anchor_right = 0.0
 	music_row.anchor_bottom = 1.0
 	music_row.offset_left = 12
-	music_row.offset_top = -44
-	music_row.offset_right = 250
+	music_row.offset_top = -(row_h + 8)
+	music_row.offset_right = 260
 	music_row.offset_bottom = -8
 	music_row.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	music_row.add_theme_constant_override("separation", 4)
 	add_child(music_row)
 
 	_music_mute_btn = Button.new()
-	_music_mute_btn.custom_minimum_size = Vector2(36, 32)
-	_music_mute_btn.add_theme_font_size_override("font_size", 16)
+	_music_mute_btn.custom_minimum_size = Vector2(bsz + 4, bsz)
+	_music_mute_btn.add_theme_font_size_override("font_size", bfs)
 	_music_mute_btn.pressed.connect(_on_music_mute_pressed)
 	music_row.add_child(_music_mute_btn)
 
 	_music_vol_down_btn = Button.new()
 	_music_vol_down_btn.text = "-"
-	_music_vol_down_btn.custom_minimum_size = Vector2(32, 32)
-	_music_vol_down_btn.add_theme_font_size_override("font_size", 16)
+	_music_vol_down_btn.custom_minimum_size = Vector2(bsz, bsz)
+	_music_vol_down_btn.add_theme_font_size_override("font_size", bfs)
 	_music_vol_down_btn.pressed.connect(_on_music_vol_down)
 	music_row.add_child(_music_vol_down_btn)
 
 	_music_vol_label = Label.new()
-	_music_vol_label.custom_minimum_size = Vector2(40, 0)
+	_music_vol_label.custom_minimum_size = Vector2(44, 0)
 	_music_vol_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_music_vol_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_music_vol_label.add_theme_font_size_override("font_size", 14)
 	_music_vol_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	music_row.add_child(_music_vol_label)
 
 	_music_vol_up_btn = Button.new()
 	_music_vol_up_btn.text = "+"
-	_music_vol_up_btn.custom_minimum_size = Vector2(32, 32)
-	_music_vol_up_btn.add_theme_font_size_override("font_size", 16)
+	_music_vol_up_btn.custom_minimum_size = Vector2(bsz, bsz)
+	_music_vol_up_btn.add_theme_font_size_override("font_size", bfs)
 	_music_vol_up_btn.pressed.connect(_on_music_vol_up)
 	music_row.add_child(_music_vol_up_btn)
 

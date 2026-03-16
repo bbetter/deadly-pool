@@ -1,0 +1,10 @@
+[23:02:2026 21:34:05.457] CLIENT_SPIKE [Назвіться якось інши] peer=1644847102 gap=139ms fps=144 sync/s=30 aim/s=26 fx/s=0 mesh_own=0 mesh_enemy=17 balls=6 plat=Web
+[23:02:2026 21:34:05.809] CLIENT_SPIKE [PlayerS] peer=1296599004 gap=144ms fps=102 sync/s=30 aim/s=9 fx/s=0 mesh_own=16 mesh_enemy=6 balls=6 plat=Web
+[23:02:2026 21:34:06.003] CLIENT_SPIKE [tARA] peer=743249875 gap=133ms fps=60 sync/s=30 aim/s=21 fx/s=0 mesh_own=10 mesh_enemy=14 balls=6 plat=Web
+[23:02:2026 21:34:18.857] CLIENT_SPIKE [Назвіться якось інши] peer=1644847102 gap=125ms fps=144 sync/s=30 aim/s=15 fx/s=0 mesh_own=4 mesh_enemy=13 balls=4 plat=Web
+[23:02:2026 21:34:18.222] CLIENT_SPIKE [PlayerS] peer=1296599004 gap=137ms fps=102 sync/s=30 aim/s=18 fx/s=0 mesh_own=0 mesh_enemy=11 balls=3 plat=Web
+[23:02:2026 21:34:19.450] CLIENT_SPIKE [tARA] peer=743249875 gap=133ms fps=60 sync/s=51 aim/s=15 fx/s=0 mesh_own=0 mesh_enemy=8 balls=3 plat=Web
+[23:02:2026 21:34:28.923] CLIENT_SPIKE [Назвіться якось інши] peer=1644847102 gap=121ms fps=144 sync/s=25 aim/s=6 fx/s=0 mesh_own=11 mesh_enemy=6 balls=3 plat=Web
+[23:02:2026 21:34:28.289] CLIENT_SPIKE [PlayerS] peer=1296599004 gap=127ms fps=102 sync/s=30 aim/s=7 fx/s=0 mesh_own=0 mesh_enemy=7 balls=3 plat=Web
+[23:02:2026 21:34:28.509] CLIENT_SPIKE [tARA] peer=743249875 gap=133ms fps=60 sync/s=22 aim/s=12 fx/s=0 mesh_own=11 mesh_enemy=10 balls=3 plat=Web
+[23:02:2026 21:34:29.021] CLIENT_SPIKE [900dfe11a] peer=69345249 gap=133ms fps=60 sync/s=22 aim/s=21 fx/s=0 mesh_own=0 mesh_enemy=17 balls=3 plat=Web

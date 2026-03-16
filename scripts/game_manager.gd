@@ -23,6 +23,7 @@ var alive_players: Array[int] = []
 var active_ball: PoolBall = null
 var is_dragging: bool = false
 var game_over: bool = false
+var _kill_streaks: Dictionary = {}  # slot -> kill count since last death this round
 
 var player_colors: Array[Color] = [
 	Color(0.9, 0.15, 0.15),   # 0 Red
@@ -37,8 +38,14 @@ var player_colors: Array[Color] = [
 var player_color_names: Array[String] = ["Red", "Blue", "Yellow", "Green", "Purple", "Orange", "Cyan", "White"]
 var player_names: Array[String] = ["Red", "Blue", "Yellow", "Green", "Purple", "Orange", "Cyan", "White"]
 
+const BOT_NAMES: Array[String] = [
+	"Snooker Steve", "Masse Mike", "Rack Rachel", "Billie Banks",
+	"Corner Carl", "Cue Kim", "Eight-Ball Ed", "Side-Pocket Sue",
+]
+
 var slot_to_peer: Dictionary = {}
 var _sync_timer: float = 0.0
+var _countdown_start_tick: int = 0  # Server: when countdown started (for watchdog)
 var _ready_peers: Array[int] = []
 var _spawned: bool = false
 
@@ -48,8 +55,7 @@ var game_hud: GameHUD
 var aim_visuals: AimVisuals
 
 # Client-side collision detection (for visual effects)
-var _collision_pairs: Dictionary = {}  # "i_j" -> bool (true = currently overlapping)
-var _wall_collision: Dictionary = {}   # slot -> bool (true = currently near wall)
+var _collision_fx: CollisionFXSystem
 const BALL_RADIUS := 0.35
 const BALL_TOUCH_DIST := BALL_RADIUS * 2.0 + 0.05  # Slightly generous for detection
 const WALL_HALF_X := 14.0  # Arena is 28x16, X walls at ±14
@@ -61,7 +67,7 @@ var _server_launch_cooldown: Dictionary = {}  # slot -> float (server-side coold
 # Launch cooldown now read from GameConfig.launch_cooldown
 
 var powerup_system: PowerupSystem
-var _server_collision_pairs_phys: Dictionary = {}  # int key -> bool (server-side ball collision tracking)
+
 var _expired_cooldown_slots: Array[int] = []  # Reused scratch array to avoid alloc in cooldown loop
 
 var _physics_log_timer: float = 0.0
@@ -84,7 +90,7 @@ var _room_code: String = ""
 
 # Client-side server timeout detection
 var _last_sync_time: float = 0.0
-const SERVER_TIMEOUT := 5.0       # Return to menu after 5s of no updates
+const SERVER_TIMEOUT := 15.0      # Return to menu after 15s of no updates (web GC pauses can be long)
 
 var _client_scene_start_time: float = 0.0
 const CLIENT_START_TIMEOUT := 20.0  # Return to menu if balls never arrive within 20s
@@ -125,6 +131,7 @@ var _spike_last_mesh_enemy: int   = 0
 @onready var balls_container: Node3D = $Balls
 @onready var hud: CanvasLayer = $HUD
 @onready var camera: Camera3D = $CameraRig/Camera3D
+@onready var _camera_rig: Node3D = $CameraRig
 
 
 func _log(msg: String) -> void:
@@ -180,6 +187,17 @@ func _client_log(msg: String) -> void:
 
 func _ready() -> void:
 	print("[GAME] _ready() started, renderer: %s" % RenderingServer.get_video_adapter_name())
+
+	# Spectate mode: free-fly camera, no game logic
+	if "--spectate" in OS.get_cmdline_user_args():
+		var cam: Camera3D = load("res://scripts/spectator_camera.gd").new()
+		add_child(cam)
+		# Disable the normal camera rig so it doesn't fight for current
+		var rig := get_node_or_null("../CameraRig")
+		if rig:
+			rig.process_mode = Node.PROCESS_MODE_DISABLED
+		return
+
 	# Shadows are too expensive on WebGL2 — disable them at runtime for web builds
 	if OS.get_name() == "Web":
 		for light in find_children("*", "DirectionalLight3D", true, false):
@@ -204,6 +222,7 @@ func _ready() -> void:
 		_open_client_log()
 
 	powerup_system = PowerupSystem.new(self)
+	_collision_fx = CollisionFXSystem.new(self, powerup_system, PLAYER_COUNT)
 	game_hud = GameHUD.new(self)
 
 	aim_visuals = AimVisuals.new(self)
@@ -217,6 +236,12 @@ func _ready() -> void:
 		powerup_system.create_hud(hud)
 		aim_visuals.create(self)
 		game_hud.create_countdown_overlay(hud)
+		# Wire touch button signals → game actions
+		game_hud.powerup_button_pressed.connect(_try_activate_powerup)
+		game_hud.emote_button_pressed.connect(_request_emote)
+		game_hud.scoreboard_button_pressed.connect(game_hud.toggle_scoreboard)
+		# Cancel aim drag when two-finger camera rotation begins
+		$CameraRig.two_finger_started.connect(_cancel_drag)
 
 	if NetworkManager.is_single_player:
 		_spawned = true
@@ -239,9 +264,15 @@ func _ready() -> void:
 				if not is_instance_valid(self) or _spawned:
 					return
 				var room_player_count := 0
+				var bot_slots_at_timeout: Array = []
 				if _room_code in NetworkManager._rooms:
-					room_player_count = NetworkManager._rooms[_room_code]["players"].size()
-				print("[SERVER] Room %s: Spawning balls (%d/%d ready)" % [_room_code, _ready_peers.size(), room_player_count])
+					var _r: Dictionary = NetworkManager._rooms[_room_code]
+					room_player_count = _r["players"].size()
+					bot_slots_at_timeout = _r.get("bot_slots", [])
+				print("[SERVER] Room %s: Safety timeout — spawning balls (%d/%d ready) bot_slots=%s players=%s" % [
+					_room_code, _ready_peers.size(), room_player_count,
+					str(bot_slots_at_timeout),
+					str(NetworkManager._rooms.get(_room_code, {}).get("players", []))])
 				_spawned = true
 				_server_spawn_balls()
 			)
@@ -270,14 +301,20 @@ func server_handle_client_ready(sender: int) -> void:
 	if sender not in _ready_peers:
 		_ready_peers.append(sender)
 		var room_player_count := 0
+		var bot_slots_log: Array = []
 		if _room_code in NetworkManager._rooms:
-			room_player_count = NetworkManager._rooms[_room_code]["players"].size()
-		print("[SERVER] Room %s: Client %d ready (%d/%d)" % [_room_code, sender, _ready_peers.size(), room_player_count])
+			var room: Dictionary = NetworkManager._rooms[_room_code]
+			room_player_count = room["players"].size()
+			bot_slots_log = room.get("bot_slots", [])
+		print("[SERVER] Room %s: Client %d ready (%d/%d) bot_slots=%s players=%s" % [
+			_room_code, sender, _ready_peers.size(), room_player_count,
+			str(bot_slots_log), str(NetworkManager._rooms.get(_room_code, {}).get("players", []))])
 
 	# Check if all clients are ready
 	var room_player_count := 0
 	if _room_code in NetworkManager._rooms:
 		room_player_count = NetworkManager._rooms[_room_code]["players"].size()
+	print("[SERVER] ready check: ready=%d room_total=%d spawned=%s" % [_ready_peers.size(), room_player_count, str(_spawned)])
 	if not _spawned and _ready_peers.size() >= room_player_count:
 		_spawned = true
 		_server_spawn_balls()
@@ -382,6 +419,10 @@ func client_receive_state(positions: PackedVector3Array, rotations: PackedVector
 func client_receive_ball_pocketed(slot: int, pocket_pos: Vector3) -> void:
 	if slot >= 0 and slot < balls.size() and balls[slot] != null:
 		balls[slot].start_pocket_animation(pocket_pos)
+	if slot == NetworkManager.my_slot:
+		Input.vibrate_handheld(80)
+	if not _is_headless and is_instance_valid(_camera_rig) and slot == NetworkManager.my_slot:
+		_camera_rig.focus_on(pocket_pos, 9.0, 1.8)
 
 
 func client_receive_player_eliminated(slot: int, killer_slot: int = -1) -> void:
@@ -412,10 +453,12 @@ func client_receive_spawn_powerup(id: int, type: int, pos_x: float, pos_z: float
 	if _is_headless:
 		return
 	powerup_system.on_spawned(id, type, pos_x, pos_z)
+	game_hud.show_pickup_label(id, type, Vector3(pos_x, 0.45, pos_z))
 
 
 func client_receive_powerup_picked_up(powerup_id: int, slot: int, type: int) -> void:
 	powerup_system.on_picked_up(powerup_id, slot, type)
+	game_hud.hide_pickup_label(powerup_id)
 
 
 func client_receive_powerup_consumed(slot: int) -> void:
@@ -504,10 +547,13 @@ func client_receive_collision_effect(pos: Vector3, color: Color, intensity: floa
 func _server_start_countdown() -> void:
 	# Keep countdown_active true so bots wait, then release after client countdown finishes
 	game_hud.countdown_active = true
-	get_tree().create_timer(4.5).timeout.connect(func() -> void:
-		if is_instance_valid(self):
-			game_hud.countdown_active = false
-	)
+	_countdown_start_tick = Time.get_ticks_msec()
+	get_tree().create_timer(4.5).timeout.connect(_on_countdown_timer_done)
+
+
+func _on_countdown_timer_done() -> void:
+	game_hud.countdown_active = false
+	_countdown_start_tick = 0
 
 
 func _apply_ball_physics(ball: PoolBall) -> void:
@@ -521,13 +567,16 @@ func _apply_ball_physics(ball: PoolBall) -> void:
 
 
 func _server_spawn_balls() -> void:
+	print("[DEBUG] _server_spawn_balls START room=%s nm_players=%d" % [_room_code, NetworkManager.players.size()])
 	# Set PLAYER_COUNT from active (non-spectator) players only
 	if _room_code in NetworkManager._rooms:
 		var room: Dictionary = NetworkManager._rooms[_room_code]
 		PLAYER_COUNT = room["players"].size() - room.get("spectators", []).size()
+	print("[DEBUG] PLAYER_COUNT=%d" % PLAYER_COUNT)
 
 	for peer_id: int in NetworkManager.players:
 		var pdata: Dictionary = NetworkManager.players[peer_id]
+		print("[DEBUG] player peer=%d slot=%s room=%s" % [peer_id, str(pdata.get("slot", "?")), pdata.get("room", "?")])
 		# Only include players from this room
 		if pdata.get("room", "") != _room_code:
 			continue
@@ -559,11 +608,24 @@ func _server_spawn_balls() -> void:
 	]
 
 	# Get bot slots from room data (needed before spawn loop for is_bot flag in spawn data)
-	var room_bot_slots: Array[int] = []
+	# NOTE: Use untyped Array to avoid GDScript typed-variable crash when assigning
+	# Variant result from Dictionary.get() to Array[int] — this silently aborts the function.
+	var room_bot_slots: Array = []
 	if _room_code in NetworkManager._rooms:
-		room_bot_slots = NetworkManager._rooms[_room_code].get("bot_slots", [])
-	_bot_slots = room_bot_slots.duplicate()
+		var raw = NetworkManager._rooms[_room_code].get("bot_slots", [])
+		for s in raw:
+			room_bot_slots.append(s as int)
+	_bot_slots.clear()
+	for s in room_bot_slots:
+		_bot_slots.append(s as int)
 
+	# Billiards-themed names for bots
+	for i in room_bot_slots.size():
+		var s: int = room_bot_slots[i]
+		if s >= 0 and s < player_names.size():
+			player_names[s] = BOT_NAMES[i % BOT_NAMES.size()]
+
+	print("[DEBUG] slot_to_peer after build: %s" % str(slot_to_peer))
 	# Build spawn data to send to clients
 	var spawn_data: Array[Dictionary] = []
 
@@ -603,19 +665,31 @@ func _server_spawn_balls() -> void:
 			"is_bot": slot_idx in room_bot_slots,
 		})
 
+	print("[DEBUG] spawn loop done: alive=%s spawn_data_size=%d" % [str(alive_players), spawn_data.size()])
 	# Tell all clients in this room to create their balls
-	for pid in NetworkManager.get_room_peers(_room_code):
+	var room_peers := NetworkManager.get_room_peers(_room_code)
+	print("[DEBUG] room_peers=%s" % str(room_peers))
+	for pid in room_peers:
+		print("[DEBUG] sending spawn_balls to pid=%d" % pid)
 		NetworkManager._rpc_game_spawn_balls.rpc_id(pid, spawn_data, alive_players, PLAYER_COUNT)
+	print("[DEBUG] _server_spawn_balls COMPLETE")
 
 	_log("GAME_START players=%d slots=%s bots=%d" % [
 		slot_to_peer.size(), str(slot_to_peer.keys()), room_bot_slots.size()])
 
 	# Start bot AI if there are bots in this room
+	print("[DEBUG] bot_slots check: room_bot_slots=%s is_empty=%s" % [str(room_bot_slots), str(room_bot_slots.is_empty())])
 	if not room_bot_slots.is_empty():
 		var BotAI := preload("res://scripts/bot_ai.gd")
 		_bot_ai = BotAI.new()
+		print("[DEBUG] bot_ai created, calling setup with slots=%s" % str(room_bot_slots))
 		_bot_ai.setup(self, room_bot_slots)
+		print("[DEBUG] Adding bot_ai to scene, self_in_tree=%s" % str(is_inside_tree()))
 		add_child(_bot_ai)
+		print("[DEBUG] bot_ai added: in_tree=%s is_processing=%s process_mode=%d" % [
+			str(_bot_ai.is_inside_tree()), str(_bot_ai.is_processing()), _bot_ai.process_mode])
+	else:
+		print("[DEBUG] No bots in this room, skipping bot_ai creation")
 
 
 func _server_sync_spectator(peer_id: int) -> void:
@@ -693,6 +767,13 @@ func _spawn_balls_local() -> void:
 		ball._is_local_ball = (slot_idx == NetworkManager.my_slot)
 
 	_bot_slots = NetworkManager.bot_slots.duplicate()
+
+	# Billiards-themed names for bots
+	for i in _bot_slots.size():
+		var s: int = _bot_slots[i]
+		if s >= 0 and s < player_names.size():
+			player_names[s] = BOT_NAMES[i % BOT_NAMES.size()]
+
 	game_hud.set_info_default()
 	game_hud.build_scoreboard()
 	_log("GAME_START single_player slots=%s bots=%d" % [str(alive_players), NetworkManager.bot_slots.size()])
@@ -716,7 +797,7 @@ func _physics_process(delta: float) -> void:
 		if _pickup_timer >= PICKUP_CHECK_INTERVAL:
 			_pickup_timer = 0.0
 			powerup_system.server_check_pickups()
-		_server_check_ball_collisions()
+		_collision_fx.server_check(balls)
 
 		# Tick down launch cooldowns (two-pass to avoid .keys() alloc and erase-while-iterating)
 		for slot in _server_launch_cooldown:
@@ -806,6 +887,13 @@ func _physics_process(delta: float) -> void:
 				age, str(alive_players), str(game_over), str(_spawned), peer_count])
 			if _spawned and not game_over and alive_players.size() <= 1:
 				_log("WATCHDOG_STUCK alive=%s game_over=false age=%.0fs — round should have ended" % [str(alive_players), age])
+			# Countdown safety: if stuck >10s force-clear (timer callback may have been swallowed)
+			if game_hud.countdown_active and _countdown_start_tick > 0:
+				var countdown_age := (Time.get_ticks_msec() - _countdown_start_tick) / 1000.0
+				if countdown_age > 10.0:
+					_log("COUNTDOWN_STUCK age=%.0fs — forcing countdown_active=false" % countdown_age)
+					game_hud.countdown_active = false
+					_countdown_start_tick = 0
 
 
 func _server_broadcast_state() -> void:
@@ -858,6 +946,21 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and is_dragging:
 		_update_drag(event.position)
 
+	elif event is InputEventScreenTouch:
+		if event.pressed:
+			if not $CameraRig.is_two_finger():
+				_try_grab_own_ball(event.position)
+		else:
+			if is_dragging:
+				_release_shot()
+
+	elif event is InputEventScreenDrag:
+		if is_dragging:
+			if $CameraRig.is_two_finger():
+				_cancel_drag()
+			else:
+				_update_drag(event.position)
+
 	# SPACEBAR - activate powerup (Bomb/Freeze/etc.)
 	if event is InputEventKey and event.pressed and event.keycode == KEY_SPACE:
 		_try_activate_powerup()
@@ -866,6 +969,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			powerup_system.rotate_portal_preview(-15.0)
 		elif event.keycode == KEY_E:
 			powerup_system.rotate_portal_preview(15.0)
+		elif event.keycode == KEY_Z:
+			_request_emote(0)
+		elif event.keycode == KEY_X:
+			_request_emote(1)
+		elif event.keycode == KEY_C:
+			_request_emote(2)
 
 
 func _try_grab_own_ball(screen_pos: Vector2) -> void:
@@ -879,11 +988,11 @@ func _try_grab_own_ball(screen_pos: Vector2) -> void:
 
 	# Only allow aiming when ball is stopped
 	if my_ball.is_moving():
-		game_hud.set_info_text("Wait for your ball to stop!", Color(1.0, 0.6, 0.2))
 		return
 
 	var ball_screen := camera.unproject_position(my_ball.global_position)
-	if screen_pos.distance_to(ball_screen) > 100.0:
+	var grab_radius := 180.0 if DisplayServer.is_touchscreen_available() else 100.0
+	if screen_pos.distance_to(ball_screen) > grab_radius:
 		return
 
 	active_ball = my_ball
@@ -892,7 +1001,6 @@ func _try_grab_own_ball(screen_pos: Vector2) -> void:
 	active_ball.drag_start = active_ball.global_position
 	active_ball.drag_current = active_ball.global_position
 
-	game_hud.set_info_text("Aiming...", player_colors[my_slot])
 	game_hud.show_power_bar()
 	aim_visuals.show()
 
@@ -937,6 +1045,7 @@ func _release_shot() -> void:
 		_client_log("[CLIENT] shot fired: slot=%d dir=(%.2f,%.2f) power=%.0f%%" % [
 			NetworkManager.my_slot, direction.x, direction.z, power_ratio * 100.0])
 		_launch_pending = true
+		Input.vibrate_handheld(40)
 		if NetworkManager.is_single_player:
 			_execute_launch(NetworkManager.my_slot, direction, power)
 		else:
@@ -950,7 +1059,80 @@ func _release_shot() -> void:
 	active_ball = null
 
 
+# Cancels an in-progress drag without firing (used when two-finger touch begins)
+func _cancel_drag() -> void:
+	if active_ball == null:
+		return
+	active_ball.is_dragging = false
+	is_dragging = false
+	active_ball = null
+	aim_visuals.hide()
+	game_hud.hide_power_bar()
+
+
 # --- Active Powerup Activation (client-side) ---
+
+# ============================================================
+# EMOTES
+# ============================================================
+
+const EMOTE_TEXTS: Array[String] = ["HA!", "GG", "???"]
+
+func _request_emote(emote_id: int) -> void:
+	if game_over or game_hud.countdown_active:
+		return
+	var my_slot := NetworkManager.my_slot
+	if my_slot < 0:
+		return
+	if NetworkManager.is_single_player:
+		_broadcast_emote(my_slot, emote_id)
+	else:
+		NetworkManager._rpc_game_request_emote.rpc_id(1, my_slot, emote_id)
+
+
+func server_handle_emote(sender: int, slot: int, emote_id: int) -> void:
+	if slot_to_peer.get(slot, -1) != sender:
+		return
+	_broadcast_emote(slot, emote_id)
+
+
+func _broadcast_emote(slot: int, emote_id: int) -> void:
+	if NetworkManager.is_single_player:
+		client_receive_emote(slot, emote_id)
+	else:
+		for pid in NetworkManager.get_room_peers(_room_code):
+			NetworkManager._rpc_game_emote.rpc_id(pid, slot, emote_id)
+		client_receive_emote(slot, emote_id)
+
+
+func client_receive_emote(slot: int, emote_id: int) -> void:
+	if _is_headless or slot < 0 or slot >= balls.size() or balls[slot] == null:
+		return
+	var ball: PoolBall = balls[slot]
+	if not ball.is_alive:
+		return
+	var text: String = EMOTE_TEXTS[clamp(emote_id, 0, EMOTE_TEXTS.size() - 1)]
+	_show_emote_label(ball, text)
+
+
+func _show_emote_label(ball: PoolBall, text: String) -> void:
+	var label := Label3D.new()
+	label.text = text
+	label.font_size = 56
+	label.modulate = ball.ball_color
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.no_depth_test = true
+	label.render_priority = 1
+	label.position = Vector3(0, 1.5, 0)
+	ball.add_child(label)
+	# Two separate tweens — avoids the parallel+set_delay infinite-loop Godot quirk
+	var rise := label.create_tween()
+	rise.tween_property(label, "position:y", 3.2, 2.5)
+	var fade := label.create_tween()
+	fade.tween_interval(0.5)
+	fade.tween_property(label, "modulate:a", 0.0, 2.0)
+	fade.tween_callback(label.queue_free)
+
 
 func _try_activate_powerup() -> void:
 	var my_slot := NetworkManager.my_slot
@@ -1090,8 +1272,8 @@ func _server_check_fallen_balls(delta: float) -> void:
 			# Also force eliminate after 1 second as safety
 			# In single-player, pool_ball._process() already increments _pocket_timer for the visual animation
 			if not NetworkManager.is_single_player:
-				ball._pocket_timer += delta
-			if ball.position.y < FALL_THRESHOLD or ball._pocket_timer > 1.0:
+				ball._visuals._pocket_timer += delta
+			if ball.position.y < FALL_THRESHOLD or ball._visuals._pocket_timer > 1.0:
 				_finalize_elimination(ball)
 			continue
 
@@ -1213,22 +1395,29 @@ func skip_round() -> void:
 
 
 func _handle_elimination(slot: int, killer_slot: int = -1) -> void:
+	# Streak tracking: victim loses streak, killer gains one
+	_kill_streaks[slot] = 0
+	if killer_slot >= 0 and killer_slot != slot:
+		_kill_streaks[killer_slot] = int(_kill_streaks.get(killer_slot, 0)) + 1
+		var streak: int = int(_kill_streaks[killer_slot])
+		if streak >= 2:
+			game_hud.add_streak_entry(killer_slot, streak)
+
 	if slot < player_names.size():
 		game_hud.add_kill_feed_entry(slot, killer_slot)
 
 	game_hud.update_scoreboard()
 
-	if slot < player_names.size():
-		game_hud.set_info_text("%s eliminated!" % player_names[slot], Color(1, 0.3, 0.3))
-		get_tree().create_timer(2.0).timeout.connect(func() -> void:
-			if not is_instance_valid(self):
-				return
-			if not game_over:
-				game_hud.set_info_default()
-		)
+	# Bots taunt on kill (server-side only to avoid double-broadcast)
+	if (_is_server or NetworkManager.is_single_player) and killer_slot >= 0 \
+			and killer_slot != slot and killer_slot in _bot_slots and randf() < 0.45:
+		_broadcast_emote(killer_slot, randi() % EMOTE_TEXTS.size())
+
 
 
 func _handle_game_over(winner_slot: int) -> void:
+	if game_over:
+		return  # Guard: simultaneous pockets can trigger two eliminations in one frame
 	game_over = true
 	is_dragging = false
 
@@ -1293,9 +1482,7 @@ func _reset_round_state() -> void:
 	aim_visuals.reset()
 	_launch_pending = false
 	_server_launch_cooldown.clear()
-	_collision_pairs.clear()
-	_wall_collision.clear()
-	_server_collision_pairs_phys.clear()
+	_collision_fx.reset()
 	_pickup_timer = 0.0
 	_web_collision_timer = 0.0
 	_any_ball_moving = false
@@ -1304,6 +1491,8 @@ func _reset_round_state() -> void:
 	_spike_sync_count = 0
 	_spike_aim_count = 0
 	_spike_fx_count = 0
+
+	_kill_streaks.clear()
 
 	# Reset powerups
 	powerup_system.reset()
@@ -1351,6 +1540,7 @@ func _local_restart_round() -> void:
 
 	# Reset HUD
 	game_hud.hide_game_over()
+	game_hud.clear_pickup_labels()
 	game_hud.create_countdown_overlay(hud)
 
 	# Re-spawn balls locally
@@ -1363,89 +1553,10 @@ func client_receive_restart() -> void:
 
 	# Reset HUD
 	game_hud.hide_game_over()
+	game_hud.clear_pickup_labels()
 	game_hud.create_countdown_overlay(hud)
 
 
-func _server_check_ball_collisions() -> void:
-	var count := balls.size()
-	for i in count:
-		var a := balls[i]
-		if a == null or not a.is_alive or a.is_pocketing:
-			continue
-		for j in range(i + 1, count):
-			var b := balls[j]
-			if b == null or not b.is_alive or b.is_pocketing:
-				continue
-
-			# Use position (local) for server-side distance checks
-			var dist := a.position.distance_to(b.position)
-			var key := i * PLAYER_COUNT + j  # Integer key — avoids string alloc per pair per tick
-			var was_touching: bool = _server_collision_pairs_phys.get(key, false)
-			var is_touching := dist < BALL_TOUCH_DIST
-
-			if is_touching and not was_touching:
-				_on_server_ball_collision(a, b)
-
-			_server_collision_pairs_phys[key] = is_touching
-
-	# Ball-to-wall collisions (server-side, for broadcast to clients)
-	var wall_limit_x := WALL_HALF_X - BALL_RADIUS - 0.05
-	var wall_limit_z := WALL_HALF_Z - BALL_RADIUS - 0.05
-	for i in count:
-		var ball := balls[i]
-		if ball == null or not ball.is_alive or ball.is_pocketing:
-			continue
-		var pos := ball.position
-		var ax := absf(pos.x)
-		var az := absf(pos.z)
-		var near_wall := ax > wall_limit_x or az > wall_limit_z
-		var wall_key := PLAYER_COUNT * PLAYER_COUNT + i  # Offset past pair keys (16–19), no string alloc
-		var was_near: bool = _server_collision_pairs_phys.get(wall_key, false)
-		if near_wall and not was_near:
-			var speed := ball.linear_velocity.length()
-			if speed > 1.0 and not NetworkManager.is_single_player:
-				var intensity := clampf(speed / 8.0, 0.0, 1.0) * 0.5
-				var burst_pos := ball.position
-				if ax > wall_limit_x:
-					burst_pos.x = signf(pos.x) * WALL_HALF_X
-				if az > wall_limit_z:
-					burst_pos.z = signf(pos.z) * WALL_HALF_Z
-				burst_pos.y = 0.4
-				for pid in NetworkManager.get_room_peers(_room_code):
-					NetworkManager._rpc_game_collision_effect.rpc_id(pid, burst_pos, Color(1.0, 0.9, 0.7), intensity, ball.slot, true, speed)
-		_server_collision_pairs_phys[wall_key] = near_wall
-
-
-func _on_server_ball_collision(a: PoolBall, b: PoolBall) -> void:
-	# Track kill credit: each ball remembers who last touched it
-	a.last_hitter = b.slot
-	b.last_hitter = a.slot
-
-	# Log collision details
-	var rel_vel := (a.linear_velocity - b.linear_velocity).length()
-	var dist := a.position.distance_to(b.position)
-	_log("BALL_COLLISION a=%d b=%d rel_vel=%.2f dist=%.3f held_powerup_a=%d held_powerup_b=%d powerup_armed_a=%s powerup_armed_b=%s" % [
-		a.slot, b.slot, rel_vel, dist, a.held_powerup, b.held_powerup, a.powerup_armed, b.powerup_armed])
-
-	# Check BOMB - explodes on collision
-	if a.held_powerup == Powerup.Type.BOMB and a.powerup_armed:
-		_log("BOMB_TRIGGER a=%d" % a.slot)
-		powerup_system.trigger_bomb(a)
-	if b.held_powerup == Powerup.Type.BOMB and b.powerup_armed:
-		_log("BOMB_TRIGGER b=%d" % b.slot)
-		powerup_system.trigger_bomb(b)
-
-	# Normal collision continues...
-
-	# Broadcast visual/audio effect to all clients
-	if not NetworkManager.is_single_player and rel_vel >= 0.5:
-		var intensity := clampf(rel_vel / 10.0, 0.0, 1.0)
-		var mid := a.position.lerp(b.position, 0.5)
-		mid.y = 0.5
-		var burst_color := a.ball_color.lerp(b.ball_color, 0.5)
-		var faster_slot := a.slot if a.linear_velocity.length() >= b.linear_velocity.length() else b.slot
-		for pid in NetworkManager.get_room_peers(_room_code):
-			NetworkManager._rpc_game_collision_effect.rpc_id(pid, mid, burst_color, intensity, faster_slot, false, rel_vel)
 
 
 # --- Client-side updates ---
@@ -1461,6 +1572,25 @@ func _process(delta: float) -> void:
 
 	if game_over:
 		return
+
+	# Per-frame HUD status: READY/WAIT pill + powerup hint + pickup label projection
+	var _hud_slot := NetworkManager.my_slot
+	game_hud.update_pickup_labels()
+	if _hud_slot >= 0 and _hud_slot < balls.size() and balls[_hud_slot] != null:
+		var _hud_ball := balls[_hud_slot]
+		game_hud.update_status(is_dragging, _hud_ball.is_alive, not _hud_ball.is_moving())
+		var _hud_remaining := 0.0
+		if _hud_ball.is_alive and _hud_ball.held_powerup != Powerup.Type.NONE:
+			if _hud_ball.held_powerup == Powerup.Type.FREEZE and _hud_ball.powerup_armed:
+				_hud_remaining = _hud_ball.freeze_timer
+			elif _hud_ball.armed_timer > 0.0:
+				_hud_remaining = _hud_ball.armed_timer
+		game_hud.update_powerup_hint(
+			_hud_ball.held_powerup if _hud_ball.is_alive else Powerup.Type.NONE,
+			_hud_ball.powerup_armed, _hud_remaining)
+	else:
+		game_hud.update_status(false, false, false)
+		game_hud.update_powerup_hint(Powerup.Type.NONE, false, 0.0)
 
 	# Client-side: detect server timeout (not in single-player)
 	if not NetworkManager.is_single_player and not _is_server:
@@ -1536,9 +1666,9 @@ func _process(delta: float) -> void:
 			_web_collision_timer += delta
 			if _web_collision_timer >= WEB_COLLISION_CHECK_INTERVAL:
 				_web_collision_timer = 0.0
-				_detect_ball_collisions()
+				_collision_fx.client_detect(balls)
 		else:
-			_detect_ball_collisions()
+			_collision_fx.client_detect(balls)
 
 	# Frame timing: calculate frame duration and track spikes
 	var frame_time_ms := (Time.get_ticks_usec() - frame_start) / 1000.0  # Convert to ms
@@ -1557,71 +1687,6 @@ func _process(delta: float) -> void:
 			print("[PERF] FRAME SPIKE: %.2fms" % frame_time_ms)
 
 
-
-func _detect_ball_collisions() -> void:
-	var count := balls.size()
-
-	# Ball-to-ball collisions — use server-synced positions to avoid interpolation jitter
-	for i in count:
-		var a := balls[i]
-		if a == null or not a.is_alive or a.is_pocketing:
-			continue
-		for j in range(i + 1, count):
-			var b := balls[j]
-			if b == null or not b.is_alive or b.is_pocketing:
-				continue
-
-			var dist := a._to_pos.distance_to(b._to_pos) if a._snapshot_count >= 1 and b._snapshot_count >= 1 else a.global_position.distance_to(b.global_position)
-			var key := i * PLAYER_COUNT + j  # Integer key — avoids string alloc per pair per tick
-			var was_touching: bool = _collision_pairs.get(key, false)
-			var is_touching := dist < BALL_TOUCH_DIST
-
-			if is_touching and not was_touching:
-				var rel_vel := (a.synced_velocity - b.synced_velocity).length()
-				# At least one ball must be moving meaningfully
-				if rel_vel < 0.5:
-					_collision_pairs[key] = is_touching
-					continue
-				var intensity := clampf(rel_vel / 10.0, 0.0, 1.0)
-				var mid := a.global_position.lerp(b.global_position, 0.5)
-				mid.y = 0.5
-				var burst_color := a.ball_color.lerp(b.ball_color, 0.5)
-				ComicBurst.fire(mid, burst_color, intensity)
-				# Play hit sound on the faster-moving ball
-				var faster_ball: PoolBall = a if a.synced_velocity.length() >= b.synced_velocity.length() else b
-				faster_ball.play_hit_ball_sound(rel_vel)
-
-			_collision_pairs[key] = is_touching
-
-	# Ball-to-wall collisions — use server-synced positions
-	var wall_limit_x := WALL_HALF_X - BALL_RADIUS - 0.05
-	var wall_limit_z := WALL_HALF_Z - BALL_RADIUS - 0.05
-	for i in count:
-		var ball := balls[i]
-		if ball == null or not ball.is_alive or ball.is_pocketing:
-			continue
-
-		var pos := ball._to_pos if ball._snapshot_count >= 1 else ball.global_position
-		var ax := absf(pos.x)
-		var az := absf(pos.z)
-		var near_wall := ax > wall_limit_x or az > wall_limit_z
-		var was_near: bool = _wall_collision.get(i, false)
-
-		if near_wall and not was_near:
-			var speed := ball.synced_velocity.length()
-			# Must be moving meaningfully to trigger wall burst
-			if speed > 1.0:
-				var intensity := clampf(speed / 8.0, 0.0, 1.0)
-				var burst_pos := ball.global_position
-				if ax > wall_limit_x:
-					burst_pos.x = signf(pos.x) * WALL_HALF_X
-				if az > wall_limit_z:
-					burst_pos.z = signf(pos.z) * WALL_HALF_Z
-				burst_pos.y = 0.4
-				ComicBurst.fire(burst_pos, Color(1.0, 0.9, 0.7), intensity * 0.5)
-				ball.play_hit_wall_sound(speed)
-
-		_wall_collision[i] = near_wall
 
 
 # --- Utility ---

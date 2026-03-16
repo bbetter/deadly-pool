@@ -6,15 +6,18 @@ class_name GameHUD
 
 var gm: Node  # GameManager reference
 
-# Style constants
+# Style constants — neon bar theme
 const COLOR_GOLD := Color(1, 0.85, 0.2)
 const COLOR_GOLD_DIM := Color(1, 0.85, 0.2, 0.5)
-const COLOR_BG_DARK := Color(0.06, 0.06, 0.12, 0.75)
-const COLOR_BG_PANEL := Color(0.08, 0.08, 0.15, 0.7)
-const COLOR_BORDER_SUBTLE := Color(1, 1, 1, 0.12)
-const COLOR_TEXT_DIM := Color(0.55, 0.55, 0.6)
-const CORNER_RADIUS := 6
-const SHADOW_COLOR := Color(0, 0, 0, 0.7)
+const COLOR_NEON_CYAN := Color(0.0, 0.9, 1.0)        # Matches 3D cyan neon tubes
+const COLOR_NEON_PINK := Color(1.0, 0.15, 0.65)       # Matches 3D pink neon tubes
+const COLOR_BG_DARK := Color(0.06, 0.03, 0.10, 0.82)  # Deep purple-dark
+const COLOR_BG_PANEL := Color(0.08, 0.04, 0.14, 0.78)
+const COLOR_BORDER_SUBTLE := Color(0.5, 0.2, 0.8, 0.22) # Subtle purple glow border
+const COLOR_TEXT_DIM := Color(0.50, 0.40, 0.62)       # Purple-gray
+const COLOR_TEXT_MAIN := Color(0.88, 0.92, 1.0)        # Slightly cyan-white
+const CORNER_RADIUS := 4
+const SHADOW_COLOR := Color(0, 0, 0, 0.88)
 
 # Helper to get tree (avoids parse error in Godot 4.6)
 func _get_tree() -> SceneTree:
@@ -37,18 +40,16 @@ var kill_feed: VBoxContainer
 var scoreboard_panel: PanelContainer
 var scoreboard_header: Label
 var scoreboard_container: VBoxContainer
-var _scoreboard_entries: Array[Dictionary] = []
-var _scoreboard_expanded: bool = false
-var _compact_sb_panel: Control = null
-var _compact_sb_vbox: VBoxContainer = null
-var _compact_entries: Array[Dictionary] = []
+var _scoreboard: ScoreboardUI
 
-# Music controls
+# Sound controls (music + sfx)
 var _music_panel: PanelContainer
 var _music_mute_btn: Button
-var _music_vol_label: Label
 var _music_vol_down_btn: Button
 var _music_vol_up_btn: Button
+var _sfx_mute_btn: Button
+var _sfx_vol_down_btn: Button
+var _sfx_vol_up_btn: Button
 
 # Toast notification (center-bottom)
 var _toast_label: Label
@@ -62,20 +63,8 @@ var countdown_value: int = 3
 var _countdown_start_msec: int = 0  # Wall-clock start time — robust against browser throttling
 var _countdown_tween: Tween
 
-# Debug / perf tracking
-var _debug_label: Label
-var _debug_timer: float = 0.0
-var _sync_count: int = 0
-var _perf_report_timer: float = 0.0
-var _perf_ping_timer: float = 0.0
-var _perf_fps_sum: float = 0.0
-var _perf_fps_min: float = 9999.0
-var _perf_sync_sum: float = 0.0
-var _perf_ping_sum: float = 0.0
-var _perf_sample_count: int = 0
-var _perf_renderer: String = ""
-var _last_sync_time: float = 0.0
-var _sync_gaps: int = 0  # count of gaps > 100ms (missed packets)
+# Debug overlay (perf/sync tracking — delegated to DebugHUDOverlay)
+var _debug_overlay: DebugHUDOverlay
 
 # Spectator overlay
 var _spectator_panel: Control = null
@@ -92,12 +81,23 @@ var _info_style: StyleBoxFlat = null
 # Power bar style (for border pulse at max power)
 var _power_bar_style: StyleBoxFlat = null
 
-# Memory & allocation tracking
-var _prev_mem_mb: float = 0.0
-var _mem_delta_mb: float = 0.0
-var _prev_obj_count: int = 0
-var _obj_delta: int = 0
-var _alloc_spike_count: int = 0  # Count of frames with high allocation
+# Status panel (replaces "You are X" info pill for active players)
+var _status_panel: PanelContainer = null
+var _status_label: Label = null
+var _pu_name_label: Label = null
+var _pu_desc_label: Label = null
+
+# Pickup labels — powerup name floated above 3D item, projected to 2D
+var _pickup_labels: Dictionary = {}  # powerup_id → {"label": Label, "pos3d": Vector3}
+var _hud_layer: CanvasLayer = null
+var _camera: Camera3D = null
+
+# Touch on-screen buttons (only created on touchscreen devices)
+signal powerup_button_pressed
+signal emote_button_pressed(index: int)
+signal scoreboard_button_pressed
+var _touch_ui: Control = null
+var _sb_expanded: bool = false
 
 
 func _init(game_manager: Node) -> void:
@@ -141,14 +141,14 @@ func _make_label(text: String, font_size: int, color: Color, shadow: bool = true
 
 func _style_button(btn: Button, font_size: int = 14) -> void:
 	btn.add_theme_font_size_override("font_size", font_size)
-	var normal := _make_stylebox(Color(0.12, 0.12, 0.2, 0.8), COLOR_BORDER_SUBTLE, 4, 1)
-	var hover := _make_stylebox(Color(0.18, 0.18, 0.28, 0.9), COLOR_GOLD_DIM, 4, 1)
-	var pressed := _make_stylebox(Color(0.08, 0.08, 0.14, 0.9), COLOR_GOLD_DIM, 4, 1)
+	var normal := _make_stylebox(Color(0.10, 0.05, 0.18, 0.82), COLOR_BORDER_SUBTLE, 4, 1)
+	var hover := _make_stylebox(Color(0.04, 0.12, 0.20, 0.92), Color(0.0, 0.9, 1.0, 0.55), 4, 1)
+	var pressed := _make_stylebox(Color(0.02, 0.07, 0.13, 0.92), Color(0.0, 0.9, 1.0, 0.55), 4, 1)
 	btn.add_theme_stylebox_override("normal", normal)
 	btn.add_theme_stylebox_override("hover", hover)
 	btn.add_theme_stylebox_override("pressed", pressed)
-	btn.add_theme_color_override("font_color", Color(0.85, 0.85, 0.9))
-	btn.add_theme_color_override("font_hover_color", COLOR_GOLD)
+	btn.add_theme_color_override("font_color", COLOR_TEXT_MAIN)
+	btn.add_theme_color_override("font_hover_color", COLOR_NEON_CYAN)
 
 
 func _set_mouse_passthrough(ctrl: Control) -> void:
@@ -158,8 +158,70 @@ func _set_mouse_passthrough(ctrl: Control) -> void:
 # --- Main HUD creation ---
 
 func create(parent: CanvasLayer) -> void:
-	# --- Info label (top-left, pill badge) ---
-	_info_style = _make_stylebox(Color(0.06, 0.06, 0.12, 0.65), Color.WHITE, 6, 0)
+	_hud_layer = parent
+	_camera = gm.get_node_or_null("CameraRig/Camera3D")
+	_create_info_panel(parent)
+	_create_status_panel(parent)
+	_create_scoreboards(parent)
+	_create_power_bar(parent)
+	_create_win_screen(parent)
+	_create_kill_feed(parent)
+	_create_toast(parent)
+	_create_music_panel(parent)
+	_create_debug_label(parent)
+	_create_skip_round_panel(parent)
+	_create_spectator_overlay(parent)
+	_create_touch_buttons(parent)
+
+
+func _create_touch_buttons(parent: CanvasLayer) -> void:
+	if not DisplayServer.is_touchscreen_available():
+		return
+
+	_touch_ui = Control.new()
+	_touch_ui.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_touch_ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(_touch_ui)
+
+	# Scoreboard toggle — top-right
+	var sb_btn := Button.new()
+	sb_btn.text = "≡"
+	sb_btn.anchor_left = 1.0; sb_btn.anchor_right = 1.0
+	sb_btn.anchor_top = 0.0; sb_btn.anchor_bottom = 0.0
+	sb_btn.offset_left = -64; sb_btn.offset_top = 10
+	sb_btn.offset_right = -10; sb_btn.offset_bottom = 64
+	_style_button(sb_btn, 20)
+	sb_btn.pressed.connect(func() -> void: scoreboard_button_pressed.emit())
+	_touch_ui.add_child(sb_btn)
+
+	# Powerup button — bottom-right
+	var pu_btn := Button.new()
+	pu_btn.text = "⚡"
+	pu_btn.anchor_left = 1.0; pu_btn.anchor_right = 1.0
+	pu_btn.anchor_top = 1.0; pu_btn.anchor_bottom = 1.0
+	pu_btn.offset_left = -80; pu_btn.offset_top = -80
+	pu_btn.offset_right = -10; pu_btn.offset_bottom = -10
+	_style_button(pu_btn, 22)
+	pu_btn.pressed.connect(func() -> void: powerup_button_pressed.emit())
+	_touch_ui.add_child(pu_btn)
+
+	# Emote buttons — stacked above powerup
+	var emote_texts := ["HA!", "GG", "???"]
+	for i in 3:
+		var emote_btn := Button.new()
+		emote_btn.text = emote_texts[i]
+		emote_btn.anchor_left = 1.0; emote_btn.anchor_right = 1.0
+		emote_btn.anchor_top = 1.0; emote_btn.anchor_bottom = 1.0
+		var y_off: int = -90 - i * 54
+		emote_btn.offset_left = -160; emote_btn.offset_top = y_off
+		emote_btn.offset_right = -90; emote_btn.offset_bottom = y_off + 48
+		_style_button(emote_btn, 13)
+		emote_btn.pressed.connect(emote_button_pressed.emit.bind(i))
+		_touch_ui.add_child(emote_btn)
+
+
+func _create_info_panel(parent: CanvasLayer) -> void:
+	_info_style = _make_stylebox(Color(0.06, 0.03, 0.10, 0.68), Color.WHITE, 6, 0)
 	_info_style.content_margin_left = 8
 	_info_style.content_margin_right = 8
 	_info_style.content_margin_top = 3
@@ -170,62 +232,85 @@ func create(parent: CanvasLayer) -> void:
 	_info_panel.position = Vector2(14, 10)
 	_info_panel.add_theme_stylebox_override("panel", _info_style)
 	parent.add_child(_info_panel)
-
-	info_label = _make_label("", 15, Color(0.9, 0.9, 0.9))
+	info_label = _make_label("", 15, COLOR_TEXT_MAIN)
 	_set_mouse_passthrough(info_label)
 	_info_panel.add_child(info_label)
-
-	var my_slot := NetworkManager.my_slot
-	if my_slot >= 0 and my_slot < gm.player_names.size():
-		info_label.text = "You are %s" % gm.player_names[my_slot]
-		var ic: Color = gm.player_colors[my_slot]
-		info_label.add_theme_color_override("font_color", ic)
-		_info_style.border_color = ic
+	if NetworkManager.my_slot >= 0:
+		_info_panel.visible = false  # status panel handles player state
 	else:
 		info_label.text = "Spectating"
 
-	# --- Scoreboard (top-left, below info) ---
+
+func _create_status_panel(parent: CanvasLayer) -> void:
+	var status_bg := _make_stylebox(Color(0.06, 0.03, 0.10, 0.75), COLOR_BORDER_SUBTLE, CORNER_RADIUS, 1)
+	status_bg.content_margin_left = 8
+	status_bg.content_margin_right = 10
+	status_bg.content_margin_top = 4
+	status_bg.content_margin_bottom = 4
+	_status_panel = PanelContainer.new()
+	_set_mouse_passthrough(_status_panel)
+	_status_panel.position = Vector2(14, 10)
+	_status_panel.add_theme_stylebox_override("panel", status_bg)
+	_status_panel.visible = false
+	parent.add_child(_status_panel)
+	var status_vbox := VBoxContainer.new()
+	_set_mouse_passthrough(status_vbox)
+	status_vbox.add_theme_constant_override("separation", 2)
+	_status_panel.add_child(status_vbox)
+	_status_label = _make_label("", 12, COLOR_NEON_CYAN)
+	_set_mouse_passthrough(_status_label)
+	_status_label.visible = false
+	status_vbox.add_child(_status_label)
+	_pu_name_label = _make_label("", 12, Color.WHITE)
+	_set_mouse_passthrough(_pu_name_label)
+	_pu_name_label.visible = false
+	status_vbox.add_child(_pu_name_label)
+	_pu_desc_label = _make_label("", 10, COLOR_TEXT_DIM)
+	_set_mouse_passthrough(_pu_desc_label)
+	_pu_desc_label.visible = false
+	status_vbox.add_child(_pu_desc_label)
+
+
+func _create_scoreboards(parent: CanvasLayer) -> void:
+	# Expanded scoreboard (Tab to reveal)
 	scoreboard_panel = PanelContainer.new()
 	_set_mouse_passthrough(scoreboard_panel)
 	scoreboard_panel.position = Vector2(14, 44)
 	scoreboard_panel.add_theme_stylebox_override("panel",
 		_make_stylebox(COLOR_BG_DARK, COLOR_BORDER_SUBTLE, CORNER_RADIUS, 1))
 	parent.add_child(scoreboard_panel)
-
 	var sb_vbox := VBoxContainer.new()
 	_set_mouse_passthrough(sb_vbox)
 	sb_vbox.add_theme_constant_override("separation", 2)
 	scoreboard_panel.add_child(sb_vbox)
-
-	scoreboard_header = _make_label("SCOREBOARD", 11, COLOR_GOLD_DIM, false)
+	scoreboard_header = _make_label("SCOREBOARD", 11, COLOR_NEON_CYAN, false)
 	_set_mouse_passthrough(scoreboard_header)
 	scoreboard_header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sb_vbox.add_child(scoreboard_header)
-
 	scoreboard_container = VBoxContainer.new()
 	_set_mouse_passthrough(scoreboard_container)
 	scoreboard_container.add_theme_constant_override("separation", 2)
 	sb_vbox.add_child(scoreboard_container)
-	scoreboard_panel.visible = false  # Hidden by default; Tab reveals it
+	scoreboard_panel.visible = false
+	# Compact scoreboard (always visible)
+	var compact_sb_panel := PanelContainer.new()
+	_set_mouse_passthrough(compact_sb_panel)
+	compact_sb_panel.position = Vector2(14, 44)
+	compact_sb_panel.add_theme_stylebox_override("panel",
+		_make_stylebox(Color(0.06, 0.03, 0.10, 0.5), Color.TRANSPARENT, CORNER_RADIUS, 0))
+	parent.add_child(compact_sb_panel)
+	var compact_sb_vbox := VBoxContainer.new()
+	_set_mouse_passthrough(compact_sb_vbox)
+	compact_sb_vbox.add_theme_constant_override("separation", 3)
+	compact_sb_panel.add_child(compact_sb_vbox)
+	_scoreboard = ScoreboardUI.new(gm, scoreboard_panel, scoreboard_container, compact_sb_panel, compact_sb_vbox)
 
-	# --- Compact scoreboard (top-left, default visible) ---
-	_compact_sb_panel = PanelContainer.new()
-	_set_mouse_passthrough(_compact_sb_panel)
-	_compact_sb_panel.position = Vector2(14, 44)
-	_compact_sb_panel.add_theme_stylebox_override("panel",
-		_make_stylebox(Color(0.06, 0.06, 0.12, 0.5), Color.TRANSPARENT, CORNER_RADIUS, 0))
-	parent.add_child(_compact_sb_panel)
 
-	_compact_sb_vbox = VBoxContainer.new()
-	_set_mouse_passthrough(_compact_sb_vbox)
-	_compact_sb_vbox.add_theme_constant_override("separation", 3)
-	_compact_sb_panel.add_child(_compact_sb_vbox)
-
-	# --- Power bar (bottom-center) ---
+func _create_power_bar(parent: CanvasLayer) -> void:
 	power_bar_bg = PanelContainer.new()
 	_set_mouse_passthrough(power_bar_bg)
-	power_bar_bg.custom_minimum_size = Vector2(350, 20)
-	_power_bar_style = _make_stylebox(Color(0.05, 0.05, 0.1, 0.85), COLOR_BORDER_SUBTLE, 8, 1)
+	power_bar_bg.custom_minimum_size = Vector2(300, 10)
+	_power_bar_style = _make_stylebox(Color(0.05, 0.03, 0.10, 0.90), COLOR_BORDER_SUBTLE, 8, 1)
 	_power_bar_style.content_margin_left = 0
 	_power_bar_style.content_margin_right = 0
 	_power_bar_style.content_margin_top = 0
@@ -233,21 +318,20 @@ func create(parent: CanvasLayer) -> void:
 	power_bar_bg.add_theme_stylebox_override("panel", _power_bar_style)
 	power_bar_bg.visible = false
 	parent.add_child(power_bar_bg)
-
 	power_bar_fill = ColorRect.new()
 	_set_mouse_passthrough(power_bar_fill)
-	power_bar_fill.size = Vector2(0, 16)
+	power_bar_fill.size = Vector2(0, 6)
 	power_bar_fill.color = Color(0.2, 0.8, 0.2)
 	power_bar_fill.visible = false
 	parent.add_child(power_bar_fill)
-
-	power_pct_label = _make_label("", 11, Color.WHITE)
+	power_pct_label = _make_label("", 11, COLOR_NEON_CYAN)
 	_set_mouse_passthrough(power_pct_label)
 	power_pct_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	power_pct_label.visible = false
 	parent.add_child(power_pct_label)
 
-	# --- Win screen ---
+
+func _create_win_screen(parent: CanvasLayer) -> void:
 	win_panel = PanelContainer.new()
 	_set_mouse_passthrough(win_panel)
 	win_panel.custom_minimum_size = Vector2(500, 160)
@@ -255,23 +339,19 @@ func create(parent: CanvasLayer) -> void:
 		_make_stylebox(COLOR_BG_DARK, COLOR_GOLD_DIM, 10, 2))
 	win_panel.visible = false
 	parent.add_child(win_panel)
-
 	var win_vbox := VBoxContainer.new()
 	_set_mouse_passthrough(win_vbox)
 	win_vbox.alignment = BoxContainer.ALIGNMENT_CENTER
 	win_vbox.add_theme_constant_override("separation", 8)
 	win_panel.add_child(win_vbox)
-
 	win_label = _make_label("", 48, COLOR_GOLD)
 	_set_mouse_passthrough(win_label)
 	win_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	win_vbox.add_child(win_label)
-
 	win_subtitle = _make_label("Next round in 5s...", 18, COLOR_TEXT_DIM)
 	_set_mouse_passthrough(win_subtitle)
 	win_subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	win_vbox.add_child(win_subtitle)
-
 	restart_button = Button.new()
 	restart_button.text = "BACK TO MENU"
 	restart_button.custom_minimum_size = Vector2(180, 44)
@@ -280,7 +360,8 @@ func create(parent: CanvasLayer) -> void:
 	restart_button.pressed.connect(_on_back_to_menu)
 	parent.add_child(restart_button)
 
-	# --- Kill feed (top-right) ---
+
+func _create_kill_feed(parent: CanvasLayer) -> void:
 	kill_feed = VBoxContainer.new()
 	_set_mouse_passthrough(kill_feed)
 	kill_feed.anchor_left = 1.0
@@ -288,21 +369,26 @@ func create(parent: CanvasLayer) -> void:
 	kill_feed.anchor_right = 1.0
 	kill_feed.anchor_bottom = 0.0
 	kill_feed.offset_left = -300
-	kill_feed.offset_top = 20
+	var kf_top := 74 if DisplayServer.is_touchscreen_available() else 20
+	kill_feed.offset_top = kf_top
 	kill_feed.offset_right = -16
-	kill_feed.offset_bottom = 350
+	kill_feed.offset_bottom = kf_top + 330
 	kill_feed.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	kill_feed.add_theme_constant_override("separation", 4)
 	parent.add_child(kill_feed)
 
-	# --- Toast label (center-bottom) ---
+
+func _create_toast(parent: CanvasLayer) -> void:
 	_toast_label = _make_label("", 18, Color.WHITE)
 	_set_mouse_passthrough(_toast_label)
 	_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_toast_label.modulate.a = 0.0
 	parent.add_child(_toast_label)
 
-	# --- Music controls (bottom-left) ---
+
+func _create_music_panel(parent: CanvasLayer) -> void:
+	if DisplayServer.is_touchscreen_available():
+		return  # Touch players mute via main menu; in-game buttons are too small to tap
 	_music_panel = PanelContainer.new()
 	_music_panel.mouse_filter = Control.MOUSE_FILTER_PASS
 	_music_panel.anchor_left = 0.0
@@ -310,61 +396,81 @@ func create(parent: CanvasLayer) -> void:
 	_music_panel.anchor_right = 0.0
 	_music_panel.anchor_bottom = 1.0
 	_music_panel.offset_left = 12
-	_music_panel.offset_top = -48
-	_music_panel.offset_right = 162
+	_music_panel.offset_top = -72
+	_music_panel.offset_right = 130
 	_music_panel.offset_bottom = -8
 	_music_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	var music_style := _make_stylebox(COLOR_BG_DARK, COLOR_BORDER_SUBTLE, 4, 1)
 	music_style.content_margin_left = 6
 	music_style.content_margin_right = 6
-	music_style.content_margin_top = 3
-	music_style.content_margin_bottom = 3
+	music_style.content_margin_top = 4
+	music_style.content_margin_bottom = 4
 	_music_panel.add_theme_stylebox_override("panel", music_style)
 	parent.add_child(_music_panel)
-
+	var sound_vbox := VBoxContainer.new()
+	sound_vbox.mouse_filter = Control.MOUSE_FILTER_PASS
+	sound_vbox.add_theme_constant_override("separation", 3)
+	_music_panel.add_child(sound_vbox)
+	# Music row
 	var music_row := HBoxContainer.new()
 	music_row.mouse_filter = Control.MOUSE_FILTER_PASS
-	music_row.add_theme_constant_override("separation", 3)
-	_music_panel.add_child(music_row)
-
+	music_row.add_theme_constant_override("separation", 2)
+	sound_vbox.add_child(music_row)
+	var music_label := _make_label("\u266a", 12, COLOR_TEXT_DIM, false)
+	music_label.custom_minimum_size = Vector2(14, 0)
+	_set_mouse_passthrough(music_label)
+	music_row.add_child(music_label)
 	_music_mute_btn = Button.new()
-	_music_mute_btn.custom_minimum_size = Vector2(28, 28)
-	_style_button(_music_mute_btn, 14)
+	_music_mute_btn.custom_minimum_size = Vector2(26, 26)
+	_style_button(_music_mute_btn, 13)
 	_music_mute_btn.pressed.connect(_on_music_mute_pressed)
 	music_row.add_child(_music_mute_btn)
-
 	_music_vol_down_btn = Button.new()
 	_music_vol_down_btn.text = "-"
-	_music_vol_down_btn.custom_minimum_size = Vector2(28, 28)
-	_style_button(_music_vol_down_btn, 14)
+	_music_vol_down_btn.custom_minimum_size = Vector2(26, 26)
+	_style_button(_music_vol_down_btn, 13)
 	_music_vol_down_btn.pressed.connect(_on_music_vol_down)
 	music_row.add_child(_music_vol_down_btn)
-
-	_music_vol_label = _make_label("", 13, COLOR_TEXT_DIM, false)
-	_set_mouse_passthrough(_music_vol_label)
-	_music_vol_label.custom_minimum_size = Vector2(28, 0)
-	_music_vol_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	music_row.add_child(_music_vol_label)
-
 	_music_vol_up_btn = Button.new()
 	_music_vol_up_btn.text = "+"
-	_music_vol_up_btn.custom_minimum_size = Vector2(28, 28)
-	_style_button(_music_vol_up_btn, 14)
+	_music_vol_up_btn.custom_minimum_size = Vector2(26, 26)
+	_style_button(_music_vol_up_btn, 13)
 	_music_vol_up_btn.pressed.connect(_on_music_vol_up)
 	music_row.add_child(_music_vol_up_btn)
-
+	# SFX row
+	var sfx_row := HBoxContainer.new()
+	sfx_row.mouse_filter = Control.MOUSE_FILTER_PASS
+	sfx_row.add_theme_constant_override("separation", 2)
+	sound_vbox.add_child(sfx_row)
+	var sfx_label := _make_label("fx", 11, COLOR_TEXT_DIM, false)
+	sfx_label.custom_minimum_size = Vector2(14, 0)
+	_set_mouse_passthrough(sfx_label)
+	sfx_row.add_child(sfx_label)
+	_sfx_mute_btn = Button.new()
+	_sfx_mute_btn.custom_minimum_size = Vector2(26, 26)
+	_style_button(_sfx_mute_btn, 13)
+	_sfx_mute_btn.pressed.connect(_on_sfx_mute_pressed)
+	sfx_row.add_child(_sfx_mute_btn)
+	_sfx_vol_down_btn = Button.new()
+	_sfx_vol_down_btn.text = "-"
+	_sfx_vol_down_btn.custom_minimum_size = Vector2(26, 26)
+	_style_button(_sfx_vol_down_btn, 13)
+	_sfx_vol_down_btn.pressed.connect(_on_sfx_vol_down)
+	sfx_row.add_child(_sfx_vol_down_btn)
+	_sfx_vol_up_btn = Button.new()
+	_sfx_vol_up_btn.text = "+"
+	_sfx_vol_up_btn.custom_minimum_size = Vector2(26, 26)
+	_style_button(_sfx_vol_up_btn, 13)
+	_sfx_vol_up_btn.pressed.connect(_on_sfx_vol_up)
+	sfx_row.add_child(_sfx_vol_up_btn)
 	_update_music_ui()
 
-	# --- Debug overlay (top-center) ---
-	if OS.is_debug_build():
-		_debug_label = _make_label("", 13, Color(1, 1, 1, 0.85))
-		_set_mouse_passthrough(_debug_label)
-		_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_debug_label.position = Vector2(0, 4)
-		_debug_label.size = Vector2(1280, 40)
-		parent.add_child(_debug_label)
 
-	# --- Skip-round panel (bottom-center, hidden until only bots remain) ---
+func _create_debug_label(parent: CanvasLayer) -> void:
+	_debug_overlay = DebugHUDOverlay.new(gm, parent)
+
+
+func _create_skip_round_panel(parent: CanvasLayer) -> void:
 	_skip_round_panel = PanelContainer.new()
 	_skip_round_panel.mouse_filter = Control.MOUSE_FILTER_PASS
 	_skip_round_panel.anchor_left = 0.5
@@ -381,16 +487,12 @@ func create(parent: CanvasLayer) -> void:
 		_make_stylebox(COLOR_BG_DARK, COLOR_BORDER_SUBTLE, CORNER_RADIUS, 1))
 	_skip_round_panel.visible = false
 	parent.add_child(_skip_round_panel)
-
 	_skip_round_btn = Button.new()
 	_skip_round_btn.text = "Skip round →"
 	_skip_round_btn.custom_minimum_size = Vector2(220, 36)
 	_style_button(_skip_round_btn, 15)
 	_skip_round_btn.pressed.connect(_on_skip_round_pressed)
 	_skip_round_panel.add_child(_skip_round_btn)
-
-	# --- Spectator overlay (bottom-center, only for spectators) ---
-	_create_spectator_overlay(parent)
 
 
 # --- Skip-round button ---
@@ -489,7 +591,7 @@ func create_countdown_overlay(parent: CanvasLayer) -> void:
 	_countdown_start_msec = Time.get_ticks_msec()
 
 	countdown_overlay = ColorRect.new()
-	countdown_overlay.color = Color(0, 0, 0, 0.7)
+	countdown_overlay.color = Color(0.02, 0.0, 0.06, 0.80)
 	countdown_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	countdown_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 	parent.add_child(countdown_overlay)
@@ -500,11 +602,11 @@ func create_countdown_overlay(parent: CanvasLayer) -> void:
 	countdown_number.set_anchors_preset(Control.PRESET_FULL_RECT)
 	countdown_number.text = "3"
 	countdown_number.add_theme_font_size_override("font_size", 120)
-	countdown_number.add_theme_color_override("font_color", COLOR_GOLD)
-	countdown_number.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	countdown_number.add_theme_color_override("font_color", COLOR_NEON_CYAN)
+	countdown_number.add_theme_color_override("font_shadow_color", Color(0.0, 0.15, 0.25, 0.95))
 	countdown_number.add_theme_constant_override("shadow_offset_x", 4)
 	countdown_number.add_theme_constant_override("shadow_offset_y", 4)
-	countdown_number.pivot_offset = Vector2(640, 360)  # Center of 1280x720
+	countdown_number.pivot_offset = _get_tree().get_root().get_visible_rect().size / 2.0
 	parent.add_child(countdown_number)
 
 	# Initial pulse
@@ -560,12 +662,10 @@ func set_info_default() -> void:
 	if info_label == null:
 		return
 	var my_slot := NetworkManager.my_slot
-	if my_slot >= 0 and my_slot < gm.player_names.size():
-		info_label.text = "You are %s" % gm.player_names[my_slot]
-		var c: Color = gm.player_colors[my_slot]
-		info_label.add_theme_color_override("font_color", c)
-		if _info_style != null:
-			_info_style.border_color = c
+	if my_slot >= 0:
+		# Active player: status panel handles all state display
+		if _info_panel != null:
+			_info_panel.visible = false
 		# If we just became a player (were spectating before), hide spectator overlay
 		if _spectator_panel != null and is_instance_valid(_spectator_panel):
 			_spectator_panel.queue_free()
@@ -576,6 +676,8 @@ func set_info_default() -> void:
 		info_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 		if _info_style != null:
 			_info_style.border_color = Color(0.6, 0.6, 0.6, 0.5)
+		if _info_panel != null:
+			_info_panel.visible = true
 
 
 func set_info_text(text: String, color: Color) -> void:
@@ -623,14 +725,14 @@ func hide_power_bar() -> void:
 
 func update_power_bar(power_ratio: float) -> void:
 	if power_bar_fill:
-		power_bar_fill.size.x = 346.0 * power_ratio
+		power_bar_fill.size.x = 296.0 * power_ratio
 		# Green → Yellow → Red gradient
 		if power_ratio < 0.5:
 			power_bar_fill.color = Color(power_ratio * 2.0, 0.8, 0.2)
 		else:
 			power_bar_fill.color = Color(0.9, 0.8 * (1.0 - power_ratio), 0.1)
 	if power_pct_label:
-		power_pct_label.text = "POWER  %d%%" % int(power_ratio * 100)
+		power_pct_label.text = "%d%%" % int(power_ratio * 100)
 	# Pulse border glow at max power
 	if _power_bar_style != null:
 		if power_ratio >= 0.99:
@@ -651,14 +753,14 @@ func update_power_bar(power_ratio: float) -> void:
 func position_power_bar() -> void:
 	var vp := gm.get_viewport().get_visible_rect().size
 	if power_bar_bg:
-		power_bar_bg.position = Vector2(vp.x / 2.0 - 175.0, vp.y - 52.0)
-		power_bar_bg.size = Vector2(350, 20)
+		power_bar_bg.position = Vector2(vp.x / 2.0 - 150.0, vp.y - 40.0)
+		power_bar_bg.size = Vector2(300, 10)
 	if power_bar_fill:
-		power_bar_fill.position = Vector2(vp.x / 2.0 - 173.0, vp.y - 50.0)
-		power_bar_fill.size.y = 16
+		power_bar_fill.position = Vector2(vp.x / 2.0 - 148.0, vp.y - 38.0)
+		power_bar_fill.size.y = 6
 	if power_pct_label:
-		power_pct_label.position = Vector2(vp.x / 2.0 - 175.0, vp.y - 72.0)
-		power_pct_label.size = Vector2(350, 20)
+		power_pct_label.position = Vector2(vp.x / 2.0 - 150.0, vp.y - 56.0)
+		power_pct_label.size = Vector2(300, 14)
 
 
 # --- Win UI ---
@@ -760,11 +862,26 @@ func add_kill_feed_win_entry(slot: int) -> void:
 		Color(0.15, 0.12, 0.0, 0.8), COLOR_GOLD_DIM, false)
 
 
+func add_streak_entry(killer_slot: int, streak: int) -> void:
+	if kill_feed == null:
+		return
+	var pname: String = gm.player_names[killer_slot] if killer_slot < gm.player_names.size() else "Player %d" % (killer_slot + 1)
+	var pcolor: Color = gm.player_colors[killer_slot] if killer_slot < gm.player_colors.size() else Color.WHITE
+	var streak_text: String
+	match streak:
+		2: streak_text = "DOUBLE KILL!"
+		3: streak_text = "TRIPLE KILL!"
+		4: streak_text = "QUAD KILL!"
+		_: streak_text = "%dx KILL STREAK!" % streak
+	_add_feed_entry_styled("%s  %s" % [pname, streak_text], pcolor, 17,
+		Color(0.12, 0.08, 0.0, 0.85), Color(1.0, 0.82, 0.1, 0.5), true)
+
+
 func _add_feed_entry(text: String, text_color: Color, _bg_color: Color) -> void:
 	var panel := PanelContainer.new()
 	_set_mouse_passthrough(panel)
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0, 0, 0, 0.35)
+	style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
 	style.corner_radius_top_left = 4
 	style.corner_radius_top_right = 4
 	style.corner_radius_bottom_left = 4
@@ -821,279 +938,17 @@ func _add_feed_entry_styled(text: String, text_color: Color, font_size: int,
 		fade_tween.tween_callback(panel.queue_free)
 
 
-# --- Scoreboard ---
+# --- Scoreboard (delegated to ScoreboardUI) ---
 
-func build_scoreboard() -> void:
-	if scoreboard_container == null:
-		return
+func build_scoreboard() -> void:        _scoreboard.build()
+func update_scoreboard() -> void:       _scoreboard.update()
+func set_scoreboard_expanded(v: bool) -> void: _scoreboard.set_expanded(v)
 
-	for child in scoreboard_container.get_children():
-		child.queue_free()
-	_scoreboard_entries.clear()
-
-	for slot_idx in gm.PLAYER_COUNT:
-		var has_ball: bool = slot_idx < gm.balls.size() and gm.balls[slot_idx] != null
-		if not has_ball:
-			continue
-
-		var panel := PanelContainer.new()
-		_set_mouse_passthrough(panel)
-		panel.custom_minimum_size = Vector2(150, 0)
-		var style := _make_stylebox(Color(0, 0, 0, 0.4), Color.TRANSPARENT, 4, 0)
-		style.content_margin_left = 6
-		style.content_margin_right = 4
-		style.content_margin_top = 2
-		style.content_margin_bottom = 2
-		panel.add_theme_stylebox_override("panel", style)
-
-		var hbox := HBoxContainer.new()
-		hbox.add_theme_constant_override("separation", 4)
-		panel.add_child(hbox)
-
-		var label := Label.new()
-		_set_mouse_passthrough(label)
-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		label.add_theme_font_size_override("font_size", 13)
-		label.add_theme_color_override("font_shadow_color", SHADOW_COLOR)
-		label.add_theme_constant_override("shadow_offset_x", 1)
-		label.add_theme_constant_override("shadow_offset_y", 1)
-		hbox.add_child(label)
-
-		# Powerup badge — right-aligned, shows type color + armed state
-		var badge_style := _make_stylebox(Color(0, 0, 0, 0), Color.TRANSPARENT, 3, 0)
-		badge_style.content_margin_left = 3
-		badge_style.content_margin_right = 3
-		badge_style.content_margin_top = 1
-		badge_style.content_margin_bottom = 1
-		var badge_panel := PanelContainer.new()
-		_set_mouse_passthrough(badge_panel)
-		badge_panel.custom_minimum_size = Vector2(32, 0)
-		badge_panel.add_theme_stylebox_override("panel", badge_style)
-		badge_panel.visible = false
-		hbox.add_child(badge_panel)
-
-		var badge_label := Label.new()
-		_set_mouse_passthrough(badge_label)
-		badge_label.add_theme_font_size_override("font_size", 11)
-		badge_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		badge_panel.add_child(badge_label)
-
-		scoreboard_container.add_child(panel)
-		_scoreboard_entries.append({
-			"panel": panel, "label": label, "slot": slot_idx, "style": style,
-			"badge_panel": badge_panel, "badge_label": badge_label, "badge_style": badge_style,
-		})
-
-	build_compact_entries()
-	update_scoreboard()
-
-
-func update_scoreboard() -> void:
-	for entry: Dictionary in _scoreboard_entries:
-		var slot_idx: int = entry["slot"]
-		var label: Label = entry["label"]
-		var style: StyleBoxFlat = entry["style"]
-		var badge_panel: PanelContainer = entry["badge_panel"]
-		var badge_label: Label = entry["badge_label"]
-		var badge_style: StyleBoxFlat = entry["badge_style"]
-		var color: Color = gm.player_colors[slot_idx] if slot_idx < gm.player_colors.size() else Color.WHITE
-		var short_name := _short_name(slot_idx)
-		var is_me := slot_idx == NetworkManager.my_slot
-		var alive: bool = slot_idx in gm.alive_players
-
-		var wins: int = NetworkManager.room_scores.get(slot_idx, 0)
-		var wins_str: String = ""
-		if wins > 0:
-			wins_str = " x%d" % wins
-
-		if alive:
-			var dot := ">" if is_me else " "
-			label.text = "%s %s%s" % [dot, short_name, wins_str]
-			label.add_theme_color_override("font_color", color)
-			style.bg_color = Color(color.r * 0.12, color.g * 0.12, color.b * 0.12, 0.5)
-			if is_me:
-				style.border_color = Color(color.r, color.g, color.b, 0.4)
-				style.border_width_left = 2
-				style.border_width_right = 0
-				style.border_width_top = 0
-				style.border_width_bottom = 0
-			else:
-				style.border_width_left = 0
-				style.border_width_right = 0
-				style.border_width_top = 0
-				style.border_width_bottom = 0
-
-			# Powerup badge
-			var ball: PoolBall = gm.balls[slot_idx] if slot_idx < gm.balls.size() else null
-			var pu_type: int = ball.held_powerup if ball else Powerup.Type.NONE
-			if pu_type != Powerup.Type.NONE:
-				var pu_color: Color = Powerup.get_color(pu_type)
-				var armed: bool = ball != null and ball.powerup_armed
-				var remaining := -1.0
-				if ball != null:
-					if pu_type == Powerup.Type.FREEZE and ball.powerup_armed:
-						remaining = ball.freeze_timer
-					elif ball.armed_timer > 0.0:
-						remaining = ball.armed_timer
-				var expiring := armed and remaining > 0.0 and remaining <= GameConfig.powerup_expiring_threshold
-				badge_label.text = Powerup.get_symbol(pu_type)
-				if expiring:
-					# Expiring: warning orange + pulse to telegraph urgency.
-					var pulse := 0.65 + 0.35 * absf(sin(Time.get_ticks_msec() / 100.0))
-					badge_style.bg_color = Color(0.45, 0.2, 0.05, 0.85 * pulse)
-					badge_style.border_color = Color(1.0, 0.55, 0.2, pulse)
-					badge_style.border_width_left = 1
-					badge_style.border_width_right = 1
-					badge_style.border_width_top = 1
-					badge_style.border_width_bottom = 1
-					badge_label.add_theme_color_override("font_color", Color(1.0, 0.8, 0.3, pulse))
-				elif armed:
-					# Armed: colored background + bright border + full-brightness text
-					badge_style.bg_color = Color(pu_color.r * 0.25, pu_color.g * 0.25, pu_color.b * 0.25, 0.9)
-					badge_style.border_color = pu_color
-					badge_style.border_width_left = 1
-					badge_style.border_width_right = 1
-					badge_style.border_width_top = 1
-					badge_style.border_width_bottom = 1
-					badge_label.add_theme_color_override("font_color", pu_color)
-				else:
-					# Held, not armed: no background, dim text
-					badge_style.bg_color = Color(0, 0, 0, 0)
-					badge_style.border_width_left = 0
-					badge_style.border_width_right = 0
-					badge_style.border_width_top = 0
-					badge_style.border_width_bottom = 0
-					badge_label.add_theme_color_override("font_color",
-						Color(pu_color.r * 0.55, pu_color.g * 0.55, pu_color.b * 0.55, 0.7))
-				badge_panel.visible = true
-			else:
-				badge_panel.visible = false
-		else:
-			label.text = "  %s%s  [X]" % [short_name, wins_str]
-			label.add_theme_color_override("font_color", Color(color.r * 0.4, color.g * 0.4, color.b * 0.4, 0.6))
-			style.bg_color = Color(0, 0, 0, 0.25)
-			style.border_width_left = 0
-			style.border_width_right = 0
-			style.border_width_top = 0
-			style.border_width_bottom = 0
-			badge_panel.visible = false
-
-	update_compact_scoreboard()
-
-
-func _short_name(slot: int) -> String:
-	if slot < 0 or slot >= gm.player_names.size():
-		return "Player %d" % (slot + 1)
-	var full: String = gm.player_names[slot]
-	var paren := full.rfind(" (")
-	if paren > 0:
-		return full.substr(0, paren)
-	return full
-
-
-# --- Compact scoreboard ---
-
-func set_scoreboard_expanded(expanded: bool) -> void:
-	_scoreboard_expanded = expanded
-	scoreboard_panel.visible = expanded
-	if _compact_sb_panel != null:
-		_compact_sb_panel.visible = not expanded
-
-
-func build_compact_entries() -> void:
-	if _compact_sb_vbox == null:
-		return
-	for child in _compact_sb_vbox.get_children():
-		child.queue_free()
-	_compact_entries.clear()
-
-	for slot_idx in gm.PLAYER_COUNT:
-		var has_ball: bool = slot_idx < gm.balls.size() and gm.balls[slot_idx] != null
-		if not has_ball:
-			continue
-
-		var row := HBoxContainer.new()
-		_set_mouse_passthrough(row)
-		row.add_theme_constant_override("separation", 4)
-		row.set_alignment(BoxContainer.ALIGNMENT_CENTER)
-
-		# Rounded colored dot (PanelContainer + StyleBoxFlat)
-		var dot_style := StyleBoxFlat.new()
-		dot_style.bg_color = Color.WHITE
-		dot_style.corner_radius_top_left = 3
-		dot_style.corner_radius_top_right = 3
-		dot_style.corner_radius_bottom_left = 3
-		dot_style.corner_radius_bottom_right = 3
-		var dot := PanelContainer.new()
-		dot.custom_minimum_size = Vector2(10, 10)
-		dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		dot.add_theme_stylebox_override("panel", dot_style)
-		row.add_child(dot)
-
-		# Powerup symbol (hidden if no powerup)
-		var pu_lbl := _make_label("", 11, Color.WHITE, false)
-		_set_mouse_passthrough(pu_lbl)
-		pu_lbl.visible = false
-		row.add_child(pu_lbl)
-
-		# Win count (hidden if 0)
-		var wins_lbl := _make_label("", 11, COLOR_TEXT_DIM, false)
-		_set_mouse_passthrough(wins_lbl)
-		wins_lbl.visible = false
-		row.add_child(wins_lbl)
-
-		_compact_sb_vbox.add_child(row)
-		_compact_entries.append({"slot": slot_idx, "dot": dot, "dot_style": dot_style, "pu_lbl": pu_lbl, "wins_lbl": wins_lbl})
-
-
-func update_compact_scoreboard() -> void:
-	for entry in _compact_entries:
-		var slot_idx: int = entry["slot"]
-		var dot: PanelContainer = entry["dot"]
-		var dot_style: StyleBoxFlat = entry["dot_style"]
-		var pu_lbl: Label = entry["pu_lbl"]
-		var wins_lbl: Label = entry["wins_lbl"]
-		var color: Color = gm.player_colors[slot_idx] if slot_idx < gm.player_colors.size() else Color.WHITE
-		var alive: bool = slot_idx in gm.alive_players
-
-		if alive:
-			dot_style.bg_color = color
-			dot.modulate.a = 1.0
-		else:
-			dot_style.bg_color = Color(color.r * 0.35, color.g * 0.35, color.b * 0.35)
-			dot.modulate.a = 0.5
-
-		var wins: int = NetworkManager.room_scores.get(slot_idx, 0)
-		if wins > 0:
-			wins_lbl.text = str(wins)
-			wins_lbl.visible = true
-		else:
-			wins_lbl.visible = false
-
-		var ball: PoolBall = gm.balls[slot_idx] if slot_idx < gm.balls.size() else null
-		var pu_type: int = ball.held_powerup if ball else Powerup.Type.NONE
-		if alive and pu_type != Powerup.Type.NONE:
-			var pu_color: Color = Powerup.get_color(pu_type)
-			var armed: bool = ball != null and ball.powerup_armed
-			var remaining := -1.0
-			if ball != null:
-				if pu_type == Powerup.Type.FREEZE and ball.powerup_armed:
-					remaining = ball.freeze_timer
-				elif ball.armed_timer > 0.0:
-					remaining = ball.armed_timer
-			var expiring := armed and remaining > 0.0 and remaining <= GameConfig.powerup_expiring_threshold
-			pu_lbl.text = Powerup.get_symbol(pu_type)
-			if expiring:
-				var pulse := 0.65 + 0.35 * absf(sin(Time.get_ticks_msec() / 100.0))
-				pu_lbl.add_theme_color_override("font_color", Color(1.0, 0.8, 0.3, pulse))
-			elif armed:
-				pu_lbl.add_theme_color_override("font_color", pu_color)
-			else:
-				pu_lbl.add_theme_color_override("font_color",
-					Color(pu_color.r * 0.55, pu_color.g * 0.55, pu_color.b * 0.55, 0.7))
-			pu_lbl.visible = true
-		else:
-			pu_lbl.visible = false
+func toggle_scoreboard() -> void:
+	_sb_expanded = not _sb_expanded
+	set_scoreboard_expanded(_sb_expanded)
+func build_compact_entries() -> void:   _scoreboard.build_compact()
+func update_compact_scoreboard() -> void: _scoreboard.update_compact()
 
 
 # --- Music controls ---
@@ -1106,21 +961,45 @@ func _on_music_mute_pressed() -> void:
 func _on_music_vol_down() -> void:
 	MusicManager.volume_down()
 	_update_music_ui()
+	_show_toast("\u266a  %d%%" % MusicManager.get_volume_percent(), COLOR_TEXT_DIM)
 
 
 func _on_music_vol_up() -> void:
 	MusicManager.volume_up()
 	_update_music_ui()
+	_show_toast("\u266a  %d%%" % MusicManager.get_volume_percent(), COLOR_TEXT_DIM)
 
 
 func _update_music_ui() -> void:
 	if _music_mute_btn == null:
 		return
 	_music_mute_btn.text = "\u2715" if MusicManager.is_muted() else "\u266a"
-	_music_vol_label.text = "%d%%" % MusicManager.get_volume_percent()
 	var muted := MusicManager.is_muted()
 	_music_vol_down_btn.disabled = muted
 	_music_vol_up_btn.disabled = muted
+	if _sfx_mute_btn == null:
+		return
+	_sfx_mute_btn.text = "\u2715" if MusicManager.is_sfx_muted() else "fx"
+	var sfx_muted := MusicManager.is_sfx_muted()
+	_sfx_vol_down_btn.disabled = sfx_muted
+	_sfx_vol_up_btn.disabled = sfx_muted
+
+
+func _on_sfx_mute_pressed() -> void:
+	MusicManager.toggle_sfx_mute()
+	_update_music_ui()
+
+
+func _on_sfx_vol_down() -> void:
+	MusicManager.sfx_volume_down()
+	_update_music_ui()
+	_show_toast("fx  %d%%" % MusicManager.get_sfx_volume_percent(), COLOR_TEXT_DIM)
+
+
+func _on_sfx_vol_up() -> void:
+	MusicManager.sfx_volume_up()
+	_update_music_ui()
+	_show_toast("fx  %d%%" % MusicManager.get_sfx_volume_percent(), COLOR_TEXT_DIM)
 
 
 func _on_back_to_menu() -> void:
@@ -1128,175 +1007,123 @@ func _on_back_to_menu() -> void:
 	gm.get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 
 
-# --- Debug overlay ---
+# --- Debug overlay (delegated to DebugHUDOverlay) ---
 
 func on_sync_received() -> void:
-	_sync_count += 1
-	var now := Time.get_ticks_msec() / 1000.0
-	if _last_sync_time > 0.0:
-		var gap := now - _last_sync_time
-		if gap > 0.1:  # >100ms gap = likely dropped packet(s)
-			_sync_gaps += 1
-	_last_sync_time = now
+	if _debug_overlay != null:
+		_debug_overlay.on_sync_received()
 
 
 func update_debug(delta: float) -> void:
-	if not OS.is_debug_build():
+	if _debug_overlay != null:
+		_debug_overlay.update(delta)
+
+
+# --- Status panel (READY / WAIT / powerup hint) ---
+
+func update_status(is_dragging: bool, is_alive: bool, ball_stopped: bool) -> void:
+	if _status_label == null:
 		return
-	_debug_timer += delta
+	if not is_alive or NetworkManager.my_slot < 0 or is_dragging or countdown_active:
+		_status_label.visible = false
+	elif ball_stopped:
+		var pulse := 0.75 + 0.25 * absf(sin(Time.get_ticks_msec() / 600.0))
+		_status_label.text = "\u25cf READY"
+		_status_label.add_theme_color_override("font_color",
+			Color(COLOR_NEON_CYAN.r, COLOR_NEON_CYAN.g, COLOR_NEON_CYAN.b, pulse))
+		_status_label.visible = true
+	else:
+		_status_label.text = "\u25cf WAIT..."
+		_status_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.1))
+		_status_label.visible = true
+	_update_status_panel_visibility()
 
-	# Send ping every 3 seconds
-	if not NetworkManager.is_single_player:
-		_perf_ping_timer += delta
-		if _perf_ping_timer >= 3.0:
-			_perf_ping_timer = 0.0
-			NetworkManager.send_ping()
 
-	if _debug_timer < 1.0:
+func update_powerup_hint(pu_type: int, armed: bool, armed_timer: float) -> void:
+	if _pu_name_label == null or _pu_desc_label == null:
 		return
-	var fps: float = float(Engine.get_frames_per_second())
-	var sync_rate: float = float(_sync_count) / _debug_timer
-	var gaps: int = _sync_gaps
-	_sync_count = 0
-	_sync_gaps = 0
-	_debug_timer = 0.0
-	if _perf_renderer.is_empty():
-		call_deferred(&"_fetch_renderer_name")
-
-	var draw_calls: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
-	var mem_mb: float = float(Performance.get_monitor(Performance.MEMORY_STATIC)) / 1048576.0
-	var proc_ms: float = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
-	var phys_ms: float = Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
-	var tris_k: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)) / 1000
-	var vmem_mb: float = Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0
-	var ping_ms: float = NetworkManager.client_ping_ms
-	
-	# Memory delta (allocation rate)
-	_mem_delta_mb = mem_mb - _prev_mem_mb
-	_prev_mem_mb = mem_mb
-
-	# Object count & delta (node allocations)
-	var tree := _get_tree()
-	var obj_count := tree.get_node_count() if tree else 0
-	_obj_delta = obj_count - _prev_obj_count
-	_prev_obj_count = obj_count
-	
-	# Track allocation spikes (frames with high node creation)
-	if _obj_delta > 5:
-		_alloc_spike_count += 1
-	
-	_perf_sample_count += 1
-
-	# String building and group queries only needed when debug overlay is visible (debug builds)
-	if _debug_label != null:
-		# Count active effects (bursts, powerup visuals)
-		var active_bursts := 0
-		if tree and tree.has_group("bursts"):
-			active_bursts = tree.get_node_count_in_group("bursts")
-
-		var debug_line: String = "%d FPS | sync %.0f/s" % [int(fps), sync_rate]
-		if gaps > 0:
-			debug_line += " | gaps %d!" % gaps
-		if ping_ms >= 0.0:
-			debug_line += " | ping %.0fms" % ping_ms
-		debug_line += " | draw %d | mem %.0fMB" % [draw_calls, mem_mb]
-
-		# Add memory delta (positive = allocating, negative = GC freeing)
-		if _mem_delta_mb > 0.1:
-			debug_line += " (+%.2f)" % _mem_delta_mb
-		elif _mem_delta_mb < -0.1:
-			debug_line += " (-%.2f)" % -_mem_delta_mb
-
-		# Add object count delta (allocations per second)
-		if _obj_delta > 0:
-			debug_line += " | obj +%d" % _obj_delta
-		elif _obj_delta < 0:
-			debug_line += " | obj %d" % _obj_delta
-
-		# Add active effects count
-		if active_bursts > 0:
-			debug_line += " | bursts %d" % active_bursts
-
-		# Add frame timing (from game_manager)
-		var frame_time: float = gm._last_frame_time if gm.has_method("_process") else 0.0
-		if frame_time > 0:
-			debug_line += " | frame %.1fms" % frame_time
-			if frame_time > 16:
-				debug_line += "!"
-			if frame_time > 50:
-				debug_line += "!!"
-
-		# Add allocation spike warning
-		if _alloc_spike_count > 0:
-			debug_line += " | spikes %d!" % _alloc_spike_count
-
-		# --- Line 2: frame budget breakdown ---
-		var ball_us: int = 0
-		for ball in gm.balls:
-			if ball != null:
-				ball_us += ball._last_process_us
-		var budget_line := "proc %.1fms | phys %.1fms | gm %.1fms | balls %dµs" % [
-			proc_ms, phys_ms, frame_time, ball_us]
-		budget_line += " | tris %dk | vmem %.0fMB" % [tris_k, vmem_mb]
-		var fx_rings := 0
-		var tree2 := _get_tree()
-		if tree2 and tree2.has_group("fx_rings"):
-			fx_rings = tree2.get_node_count_in_group("fx_rings")
-		if fx_rings > 0:
-			budget_line += " | rings %d" % fx_rings
-
-		_debug_label.text = debug_line + "\n" + budget_line
-
-		# Color code: green=good, yellow=warning, red=bad
-		if fps < 30 or (ping_ms > 150 and ping_ms >= 0.0) or gaps > 2 or _alloc_spike_count > 3:
-			_debug_label.add_theme_color_override("font_color", Color(1, 0.4, 0.3, 0.9))
-		elif fps < 50 or (ping_ms > 80 and ping_ms >= 0.0) or gaps > 0 or _alloc_spike_count > 0:
-			_debug_label.add_theme_color_override("font_color", Color(1, 0.85, 0.3, 0.9))
-		else:
-			_debug_label.add_theme_color_override("font_color", Color(0.7, 1, 0.7, 0.9))
-
-		if OS.is_debug_build() and _perf_sample_count % 5 == 0:
-			print("[PERF] %s | %s\n[PERF] %s" % [debug_line, _perf_renderer, budget_line])
-		if OS.is_debug_build() and _obj_delta > 10:
-			print("[PERF] ALLOC SPIKE: +%d nodes, +%.2f MB memory" % [_obj_delta, _mem_delta_mb])
-
-	# Accumulate for server report
-	_perf_fps_sum += fps
-	_perf_sync_sum += sync_rate
-	if ping_ms >= 0.0:
-		_perf_ping_sum += ping_ms
-	if fps < _perf_fps_min:
-		_perf_fps_min = fps
-
-	# Reset allocation spike counter every 10 seconds
-	if _perf_sample_count % 10 == 0:
-		_alloc_spike_count = 0
-	
-	# Send summary to server every 30s
-	if not NetworkManager.is_single_player:
-		_perf_report_timer += 1.0
-		if _perf_report_timer >= 30.0 and _perf_sample_count > 0:
-			_perf_report_timer = 0.0
-			_send_perf_report()
+	if pu_type == Powerup.Type.NONE:
+		_pu_name_label.visible = false
+		_pu_desc_label.visible = false
+		_update_status_panel_visibility()
+		return
+	var symbol := Powerup.get_symbol(pu_type)
+	var name_str := Powerup.get_powerup_name(pu_type)
+	var pu_color := Powerup.get_color(pu_type)
+	var expiring := armed and armed_timer > 0.0 and armed_timer <= GameConfig.powerup_expiring_threshold
+	if armed:
+		var pulse_a := 0.65 + 0.35 * absf(sin(Time.get_ticks_msec() / 100.0)) if expiring else 1.0
+		var key_hint := "tap ⚡" if DisplayServer.is_touchscreen_available() else "— SPACE"
+		_pu_name_label.text = "%s %s  %s" % [symbol, name_str.to_upper(), key_hint]
+		_pu_name_label.add_theme_color_override("font_color",
+			Color(pu_color.r, pu_color.g, pu_color.b, pulse_a))
+		_pu_name_label.visible = true
+		_pu_desc_label.visible = false
+	else:
+		_pu_name_label.text = "%s %s" % [symbol, name_str]
+		_pu_name_label.add_theme_color_override("font_color",
+			Color(pu_color.r * 0.75, pu_color.g * 0.75, pu_color.b * 0.75))
+		_pu_name_label.visible = true
+		_pu_desc_label.text = Powerup.get_desc(pu_type)
+		_pu_desc_label.visible = true
+	_update_status_panel_visibility()
 
 
-func _fetch_renderer_name() -> void:
-	_perf_renderer = RenderingServer.get_video_adapter_name()
+func _update_status_panel_visibility() -> void:
+	if _status_panel == null:
+		return
+	var any_visible := (
+		(_status_label != null and _status_label.visible) or
+		(_pu_name_label != null and _pu_name_label.visible)
+	)
+	_status_panel.visible = any_visible
 
 
-func _send_perf_report() -> void:
-	var count: float = maxf(float(_perf_sample_count), 1.0)
-	var avg_ping: float = _perf_ping_sum / count
-	var fps_avg: float = _perf_fps_sum / count
-	var sync_avg: float = _perf_sync_sum / count
-	var report := "%s|%.0f|%.0f|%.0f|%.0f" % [
-		_perf_renderer, fps_avg, _perf_fps_min, sync_avg, avg_ping]
-	if OS.is_debug_build():
-		print("[PERF] Sending report to server: fps_avg=%.0f fps_min=%.0f sync=%.0f/s ping=%.0fms" % [
-			fps_avg, _perf_fps_min, sync_avg, avg_ping])
-	_perf_fps_sum = 0.0
-	_perf_fps_min = 9999.0
-	_perf_sync_sum = 0.0
-	_perf_ping_sum = 0.0
-	_perf_sample_count = 0
-	NetworkManager._rpc_client_perf_report.rpc_id(1, report)
+# --- Pickup labels (powerup name floating above 3D pickup, projected to 2D) ---
+
+func show_pickup_label(id: int, type: int, pos3d: Vector3) -> void:
+	if _hud_layer == null or _pickup_labels.has(id):
+		return
+	var lbl := Label.new()
+	lbl.text = Powerup.get_powerup_name(type)
+	var pu_color := Powerup.get_color(type)
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", pu_color)
+	lbl.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.92))
+	lbl.add_theme_constant_override("shadow_offset_x", 1)
+	lbl.add_theme_constant_override("shadow_offset_y", 1)
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud_layer.add_child(lbl)
+	_pickup_labels[id] = {"label": lbl, "pos3d": pos3d}
+
+
+func hide_pickup_label(id: int) -> void:
+	if not _pickup_labels.has(id):
+		return
+	var entry = _pickup_labels[id]
+	var lbl: Label = entry["label"]
+	if is_instance_valid(lbl):
+		lbl.queue_free()
+	_pickup_labels.erase(id)
+
+
+func clear_pickup_labels() -> void:
+	for id in _pickup_labels:
+		var entry = _pickup_labels[id]
+		var lbl: Label = entry["label"]
+		if is_instance_valid(lbl):
+			lbl.queue_free()
+	_pickup_labels.clear()
+
+
+func update_pickup_labels() -> void:
+	if _pickup_labels.is_empty() or _camera == null:
+		return
+	for id in _pickup_labels:
+		var entry = _pickup_labels[id]
+		var lbl: Label = entry["label"]
+		if not is_instance_valid(lbl):
+			continue
+		var pos3d: Vector3 = entry["pos3d"]
+		var screen_pos := _camera.unproject_position(pos3d + Vector3(0, 1.2, 0))
+		lbl.position = screen_pos - Vector2(lbl.size.x * 0.5, lbl.size.y)

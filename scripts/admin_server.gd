@@ -94,6 +94,9 @@ func _handle_request(peer: StreamPeerTCP, request: String) -> void:
 	elif path.begins_with("/api/logs"):
 		var json := _build_logs_json(path)
 		_send_response(peer, "200 OK", "application/json", json)
+	elif path.begins_with("/api/system-log"):
+		var json := _build_system_log_json()
+		_send_response(peer, "200 OK", "application/json", json)
 	elif path == "/api/tuning" and method == "GET":
 		var json := JSON.stringify(GameConfig.to_dict())
 		_send_response(peer, "200 OK", "application/json", json)
@@ -199,5 +202,25 @@ func _build_logs_json(path: String) -> String:
 		return JSON.stringify({"rooms": rooms})
 
 
+func _build_system_log_json() -> String:
+	# Read Godot's own log file — contains all print() output and runtime errors.
+	# Godot writes to user://logs/godot.log automatically.
+	var log_path := OS.get_user_data_dir() + "/logs/godot.log"
+	var file := FileAccess.open(log_path, FileAccess.READ)
+	if file == null:
+		return JSON.stringify({"error": "log file not found", "path": log_path, "lines": []})
 
+	var all_lines: Array[String] = []
+	while not file.eof_reached():
+		var line := file.get_line()
+		if line != "":
+			all_lines.append(line)
+	file.close()
 
+	# Return last 500 lines to keep the response small
+	var start := maxi(0, all_lines.size() - 500)
+	var lines: Array = []
+	for i in range(start, all_lines.size()):
+		lines.append(all_lines[i])
+
+	return JSON.stringify({"path": log_path, "total": all_lines.size(), "lines": lines})

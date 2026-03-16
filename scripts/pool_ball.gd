@@ -24,6 +24,8 @@ var _last_process_us: int = 0  # Debug: µs spent in last _process() call
 @onready var ball_mesh: MeshInstance3D = $BallMesh
 var powerup_ring: MeshInstance3D = null  # Ring aura around ball when holding powerup
 var powerup_ring_mat: StandardMaterial3D = null  # Ring material for color/alpha updates
+var _trail: GPUParticles3D = null         # Motion trail (visual only, not on server)
+var _trail_process_mat: ParticleProcessMaterial = null
 
 # Static cache — procedural audio generated once, shared across all ball instances
 static var _shared_ball_hit_stream: AudioStreamWAV
@@ -39,12 +41,9 @@ signal ball_fell(ball: PoolBall)
 
 var _sound_cooldown: float = 0.0
 var _is_client: bool = false
-var _glow_time: float = 0.0
 var _is_local_ball: bool = false
 var _ball_mat: StandardMaterial3D
-var _ring_timer: float = 0.0  # For powerup ring pulse animation
-var _cached_powerup_type: int = -1  # Cached powerup type for ring color
-var _cached_powerup_color: Color = Color.WHITE  # Cached ring color to avoid per-frame dict lookup
+var _visuals: BallVisuals  # Owns ring/glow/trail/pocket animation timers
 
 # Client-readable velocity (linear_velocity may not be writable on frozen bodies)
 var synced_velocity: Vector3 = Vector3.ZERO
@@ -55,11 +54,6 @@ var _to_pos: Vector3
 var _to_rot: Vector3
 var _to_lin_vel: Vector3
 var _snapshot_count: int = 0  # How many snapshots received so far
-
-# Pocketing animation
-var _pocket_center: Vector3
-var _pocket_timer: float = 0.0
-const POCKET_ANIM_DURATION := 0.5
 
 
 func _ready() -> void:
@@ -84,9 +78,11 @@ func _ready() -> void:
 		max_contacts_reported = 4
 
 	_create_powerup_ring()
+	_visuals = BallVisuals.new(self)
 
 	if not NetworkManager.is_server_mode:
 		_setup_sounds()
+		_create_trail()
 
 
 func _apply_visuals() -> void:
@@ -104,6 +100,12 @@ func _apply_visuals() -> void:
 	mat.emission_energy_multiplier = 0.0
 	ball_mesh.set_surface_override_material(0, mat)
 	_ball_mat = mat
+
+	if _trail_process_mat != null:
+		var ramp_tex: GradientTexture1D = _trail_process_mat.color_ramp as GradientTexture1D
+		if ramp_tex != null and ramp_tex.gradient != null:
+			ramp_tex.gradient.set_color(0, Color(ball_color.r, ball_color.g, ball_color.b, 0.8))
+			ramp_tex.gradient.set_color(1, Color(ball_color.r, ball_color.g, ball_color.b, 0.0))
 
 
 func _create_powerup_ring() -> void:
@@ -132,6 +134,53 @@ func _create_powerup_ring() -> void:
 	powerup_ring_mat = mat
 
 
+func _create_trail() -> void:
+	# Process material — controls emission, velocity, color over lifetime
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.18
+	pm.direction = Vector3(0, 1, 0)
+	pm.spread = 180.0
+	pm.gravity = Vector3.ZERO
+	pm.initial_velocity_min = 0.1
+	pm.initial_velocity_max = 0.4
+	pm.scale_min = 0.12
+	pm.scale_max = 0.22
+	# Fade from ball color to transparent over particle lifetime
+	var grad := Gradient.new()
+	grad.set_color(0, Color(ball_color.r, ball_color.g, ball_color.b, 0.8))
+	grad.set_color(1, Color(ball_color.r, ball_color.g, ball_color.b, 0.0))
+	var grad_tex := GradientTexture1D.new()
+	grad_tex.gradient = grad
+	pm.color_ramp = grad_tex
+	_trail_process_mat = pm
+
+	# Particle mesh — low-poly sphere
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.5
+	sphere.height = 1.0
+	sphere.radial_segments = 4
+	sphere.rings = 2
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	sphere.surface_set_material(0, mat)
+
+	var trail := GPUParticles3D.new()
+	trail.name = "Trail"
+	trail.amount = 16
+	trail.lifetime = 0.3
+	trail.emitting = false
+	trail.local_coords = false
+	trail.one_shot = false
+	trail.explosiveness = 0.0
+	trail.process_material = pm
+	trail.draw_pass_1 = sphere
+	add_child(trail)
+	_trail = trail
+
+
 func apply_setup(id: int, color: Color) -> void:
 	player_id = id
 	ball_color = color
@@ -147,28 +196,31 @@ func setup(id: int, color: Color) -> void:
 func _setup_sounds() -> void:
 	# Generate procedural audio once; reuse the same streams across all balls
 	if _shared_ball_hit_stream == null:
-		_shared_ball_hit_stream = _generate_ball_hit_sound()
+		_shared_ball_hit_stream = ProceduralAudio.generate_ball_hit()
 	if _shared_wall_hit_stream == null:
-		_shared_wall_hit_stream = _generate_wall_hit_sound()
+		_shared_wall_hit_stream = ProceduralAudio.generate_wall_hit()
 	if _shared_fall_stream == null:
-		_shared_fall_stream = _generate_fall_sound()
+		_shared_fall_stream = ProceduralAudio.generate_fall()
 
 	hit_ball_sound = AudioStreamPlayer3D.new()
 	hit_ball_sound.stream = _shared_ball_hit_stream
 	hit_ball_sound.max_db = 5.0
 	hit_ball_sound.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
+	hit_ball_sound.bus = &"SFX"
 	add_child(hit_ball_sound)
 
 	hit_wall_sound = AudioStreamPlayer3D.new()
 	hit_wall_sound.stream = _shared_wall_hit_stream
 	hit_wall_sound.max_db = 3.0
 	hit_wall_sound.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
+	hit_wall_sound.bus = &"SFX"
 	add_child(hit_wall_sound)
 
 	fall_sound = AudioStreamPlayer3D.new()
 	fall_sound.stream = _shared_fall_stream
 	fall_sound.max_db = 8.0
 	fall_sound.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
+	fall_sound.bus = &"SFX"
 	add_child(fall_sound)
 
 	# Server uses body_entered for collision sounds; clients use game_manager detection
@@ -243,80 +295,19 @@ func _process(delta: float) -> void:
 		if freeze_timer > 0.0:
 			freeze_timer -= delta
 
-	# Update powerup ring aura
-	if powerup_ring != null and is_alive and not is_pocketing:
-		if held_powerup != Powerup.Type.NONE:
-			powerup_ring.visible = true
-
-			# Update ring timer for pulse animation
-			_ring_timer += delta
-
-			# Get powerup color — refresh cache only when powerup type changes
-			if held_powerup != _cached_powerup_type:
-				_cached_powerup_type = held_powerup
-				_cached_powerup_color = Powerup.get_color(held_powerup)
-			var pu_color: Color = _cached_powerup_color
-
-			# Pulse effect when armed
-			var armed: bool = powerup_armed
-			var pulse: float = 1.0
-			if armed:
-				pulse = 0.7 + 0.3 * absf(sin(_ring_timer * 6.0))  # Faster pulse when armed
-
-			powerup_ring_mat.albedo_color = Color(pu_color.r, pu_color.g, pu_color.b, 0.9 * pulse)
-			powerup_ring_mat.emission = Color(pu_color.r, pu_color.g, pu_color.b)
-			powerup_ring_mat.emission_energy_multiplier = 2.5 * pulse
-		else:
-			powerup_ring.visible = false
-			_ring_timer = 0.0
-
-	# Launchable glow pulse (client-side, local ball only)
-	if _is_local_ball and _ball_mat:
-		var can_launch := is_alive and not is_pocketing and not is_moving() and not is_dragging
-		if can_launch:
-			_glow_time += delta
-			var pulse := (sin(_glow_time * 3.0) + 1.0) * 0.5  # 0..1
-			_ball_mat.emission_energy_multiplier = lerpf(0.15, 0.6, pulse)
-		else:
-			if _ball_mat.emission_energy_multiplier > 0.0:
-				_ball_mat.emission_energy_multiplier = 0.0
-			_glow_time = 0.0
-
-	# Pocketing animation (client-side)
-	if is_pocketing and not NetworkManager.is_server_mode:
-		_pocket_timer += delta
-		var t := clampf(_pocket_timer / POCKET_ANIM_DURATION, 0.0, 1.0)
-		# Ease-in curve for acceleration into pocket
-		var ease_t := t * t
-
-		# Move toward pocket center and sink down
-		var start_y := 0.35  # ball surface height
-		var end_y := -1.5
-		global_position.x = lerpf(global_position.x, _pocket_center.x, ease_t * 0.3)
-		global_position.z = lerpf(global_position.z, _pocket_center.z, ease_t * 0.3)
-		global_position.y = lerpf(start_y, end_y, ease_t)
-
-		# Shrink the ball as it falls in
-		var s := lerpf(1.0, 0.3, ease_t)
-		scale = Vector3(s, s, s)
+	# Visual effects: ring pulse, glow, trail, pocket animation (delegated to BallVisuals)
+	if not NetworkManager.is_server_mode and _visuals != null and _visuals.tick(delta):
 		_last_process_us = Time.get_ticks_usec() - _t0
 		return
 
-	# Client-side position tracking
-	# Smoothly blend toward server position. At 60Hz updates the positions are
-	# close together, so a fast lerp looks smooth and hides the discrete steps —
-	# especially around wall bounces where the ball reverses direction in one tick.
+	# Client-side position tracking: smoothly blend toward server position.
+	# Cap blend at 0.67 to prevent teleporting on GC pauses (133ms delta → clamp).
 	if _is_client and _snapshot_count >= 1:
-		# Cap blend at 0.67 (the normal 60fps value) to prevent position snapping on
-		# GC pauses: at 133ms delta blend would be 5.3→clamped to 1.0 = instant teleport.
-		# With cap=0.67, the ball instead catches up smoothly over the next 3-4 frames.
 		var blend := clampf(delta * 40.0, 0.0, 0.67)
 		global_position = global_position.lerp(_to_pos, blend)
 		rotation = rotation.lerp(_to_rot, blend)
-
 		synced_velocity = _to_lin_vel
 		# NOTE: Don't set linear_velocity/angular_velocity on frozen bodies
-		# It can trigger physics recalculations and cause spikes
 
 	_last_process_us = Time.get_ticks_usec() - _t0
 
@@ -341,8 +332,7 @@ func receive_state(pos: Vector3, rot: Vector3, lin_vel: Vector3) -> void:
 
 func start_pocket_animation(pocket_pos: Vector3) -> void:
 	is_pocketing = true
-	_pocket_center = pocket_pos
-	_pocket_timer = 0.0
+	_visuals.start_pocket(pocket_pos)
 	# In single-player, freeze the ball so Jolt doesn't fight the visual animation
 	if NetworkManager.is_single_player:
 		freeze = true
@@ -418,74 +408,3 @@ func _on_body_entered(body: Node) -> void:
 		play_hit_ball_sound(speed)
 	else:
 		play_hit_wall_sound(speed)
-
-
-# --- Procedural sound generation ---
-
-func _generate_ball_hit_sound() -> AudioStreamWAV:
-	var sample_rate := 22050
-	var duration := 0.12
-	var samples := int(sample_rate * duration)
-	var data := PackedByteArray()
-	data.resize(samples * 2)
-	for i in samples:
-		var t := float(i) / sample_rate
-		var env := exp(-t * 60.0)
-		var sig := sin(t * TAU * 3200.0) * 0.5 + sin(t * TAU * 4800.0) * 0.3
-		if t < 0.005:
-			sig += randf_range(-1.0, 1.0) * 0.8
-		sig *= env
-		var sample := int(clampf(sig, -1.0, 1.0) * 32767.0)
-		data[i * 2] = sample & 0xFF
-		data[i * 2 + 1] = (sample >> 8) & 0xFF
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = sample_rate
-	stream.data = data
-	return stream
-
-
-func _generate_wall_hit_sound() -> AudioStreamWAV:
-	var sample_rate := 22050
-	var duration := 0.15
-	var samples := int(sample_rate * duration)
-	var data := PackedByteArray()
-	data.resize(samples * 2)
-	for i in samples:
-		var t := float(i) / sample_rate
-		var env := exp(-t * 35.0)
-		var sig := sin(t * TAU * 800.0) * 0.6 + sin(t * TAU * 1200.0) * 0.3
-		if t < 0.008:
-			sig += randf_range(-1.0, 1.0) * 0.5
-		sig *= env
-		var sample := int(clampf(sig, -1.0, 1.0) * 32767.0)
-		data[i * 2] = sample & 0xFF
-		data[i * 2 + 1] = (sample >> 8) & 0xFF
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = sample_rate
-	stream.data = data
-	return stream
-
-
-func _generate_fall_sound() -> AudioStreamWAV:
-	var sample_rate := 22050
-	var duration := 0.5
-	var samples := int(sample_rate * duration)
-	var data := PackedByteArray()
-	data.resize(samples * 2)
-	for i in samples:
-		var t := float(i) / sample_rate
-		var env := exp(-t * 4.0)
-		var freq := lerpf(600.0, 120.0, t / duration)
-		var sig := sin(t * TAU * freq) * 0.5
-		sig += randf_range(-1.0, 1.0) * 0.15 * env
-		sig *= env
-		var sample := int(clampf(sig, -1.0, 1.0) * 32767.0)
-		data[i * 2] = sample & 0xFF
-		data[i * 2 + 1] = (sample >> 8) & 0xFF
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = sample_rate
-	stream.data = data
-	return stream

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base href="/dp/admin/">
+<title>Deadly Pool - Admin</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a14; color: #ccc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; padding: 24px; }
+h1 { color: #ffda33; font-size: 28px; margin-bottom: 4px; }
+.subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+.stats { display: flex; gap: 24px; margin-bottom: 24px; }
+.stat { background: #14142a; border: 1px solid #2a2a4a; border-radius: 8px; padding: 16px 24px; }
+.stat-value { font-size: 32px; font-weight: bold; color: #fff; }
+.stat-label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+.rooms { display: flex; flex-direction: column; gap: 16px; }
+.room { background: #14142a; border: 1px solid #2a2a4a; border-radius: 8px; padding: 20px; }
+.room-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.room-code { font-size: 22px; font-weight: bold; color: #4dd9ff; font-family: monospace; }
+.badge { font-size: 11px; padding: 3px 10px; border-radius: 12px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; }
+.badge-lobby { background: #1a3a1a; color: #4dff7c; }
+.badge-countdown { background: #3a3a1a; color: #ffda33; }
+.badge-in_game { background: #1a1a3a; color: #4d9fff; }
+.player-list { list-style: none; }
+.player { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid #1a1a2a; }
+.player:last-child { border-bottom: none; }
+.color-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+.player-name { color: #eee; font-size: 15px; }
+.player-peer { color: #444; font-size: 12px; }
+.perf-badges { font-size: 12px; font-family: monospace; margin-left: auto; display: flex; gap: 8px; }
+.empty { color: #444; font-style: italic; padding: 20px; text-align: center; }
+.updated { color: #333; font-size: 12px; position: fixed; bottom: 12px; right: 16px; }
+</style>
+</head>
+<body>
+<h1>Deadly Pool</h1>
+<p class="subtitle">Server Admin Dashboard &mdash; <a href="logs" style="color:#4dd9ff">Room Logs</a> &mdash; <a href="tuning" style="color:#4dd9ff">Physics Tuning</a></p>
+<div class="stats">
+  <div class="stat"><div class="stat-value" id="uptime">--</div><div class="stat-label">Uptime</div></div>
+  <div class="stat"><div class="stat-value" id="players">--</div><div class="stat-label">Players</div></div>
+  <div class="stat"><div class="stat-value" id="room-count">--</div><div class="stat-label">Rooms</div></div>
+</div>
+<div class="rooms" id="rooms"><div class="empty">Loading...</div></div>
+<div class="updated" id="updated"></div>
+<script>
+const COLORS = ["#e62626","#2666e6","#e6bf1a","#26cc4d"];
+const COLOR_NAMES = ["Red","Blue","Yellow","Green"];
+function fmt(s) {
+  let h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+  return h > 0 ? h+"h "+m+"m" : m > 0 ? m+"m "+sec+"s" : sec+"s";
+}
+function fpsColor(v) { return v >= 50 ? "#4dff7c" : v >= 30 ? "#ffda33" : "#ff4d4d"; }
+function pingColor(v) { return v < 0 ? "#555" : v <= 80 ? "#4dff7c" : v <= 150 ? "#ffda33" : "#ff4d4d"; }
+function perfBadges(p) {
+  if (!p || !p.fps_avg) return "";
+  let b = '<span class="perf-badges">';
+  b += '<span style="color:'+fpsColor(p.fps_avg)+'" title="FPS avg/min: '+p.fps_avg+'/'+p.fps_min+'">'+p.fps_avg+'fps</span>';
+  if (p.ping >= 0) b += '<span style="color:'+pingColor(p.ping)+'" title="Round-trip ping">'+p.ping+'ms</span>';
+  b += '<span style="color:#666" title="State sync rate">'+Math.round(p.sync)+'/s</span>';
+  b += '</span>';
+  return b;
+}
+async function refresh() {
+  try {
+    let r = await fetch("api/status");
+    let d = await r.json();
+    document.getElementById("uptime").textContent = fmt(d.server_uptime);
+    document.getElementById("players").textContent = d.total_players;
+    document.getElementById("room-count").textContent = d.total_rooms;
+    let el = document.getElementById("rooms");
+    if (d.rooms.length === 0) {
+      el.innerHTML = '<div class="empty">No active rooms</div>';
+    } else {
+      el.innerHTML = d.rooms.map(room => {
+        let players = room.players.map(p => {
+          let c = COLORS[p.slot] || "#888";
+          let cn = COLOR_NAMES[p.slot] || "?";
+          return '<li class="player"><span class="color-dot" style="background:'+c+'"></span><span class="player-name">'+esc(p.name)+' <small>('+cn+')</small></span><span class="player-peer">peer:'+p.peer_id+'</span>'+perfBadges(p.perf)+'</li>';
+        }).join("");
+        return '<div class="room"><div class="room-header"><span class="room-code">'+room.code+'</span><span class="badge badge-'+room.status+'">'+room.status.replace("_"," ")+'</span><span class="player-peer">'+room.player_count+'/4 players</span></div><ul class="player-list">'+players+'</ul></div>';
+      }).join("");
+    }
+    document.getElementById("updated").textContent = "Updated: " + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById("updated").textContent = "Error: " + e.message;
+  }
+}
+function esc(s) { let d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

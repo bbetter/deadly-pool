@@ -51,8 +51,8 @@ var powerup_weight_gravity_well: float = 1.0
 var swap_cursor_snap_radius: float = 2.0  # Max cursor distance to snap to a target ball
 
 # --- Bot AI ---
-var bot_min_delay: float = 1.0
-var bot_max_delay: float = 2.5
+var bot_min_delay: float = 0.6
+var bot_max_delay: float = 1.4
 var bot_power_min_pct: float = 0.45
 var bot_power_max_pct: float = 0.85
 var bot_scatter_angle: float = 0.35          # radians (±20 degrees) - base scatter

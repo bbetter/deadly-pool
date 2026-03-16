@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base href="/dp/admin/">
+<title>Deadly Pool - Physics Tuning</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a14; color: #ccc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; padding: 24px; max-width: 800px; margin: 0 auto; }
+h1 { color: #ffda33; font-size: 24px; margin-bottom: 4px; }
+.subtitle { color: #666; font-size: 13px; margin-bottom: 20px; }
+.nav { margin-bottom: 20px; }
+.nav a { color: #4dd9ff; text-decoration: none; margin-right: 16px; }
+.nav a:hover { text-decoration: underline; }
+.section { background: #14142a; border: 1px solid #2a2a4a; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
+.section h2 { color: #4dd9ff; font-size: 15px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+.field { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid #1a1a2a; }
+.field:last-child { border-bottom: none; }
+.field label { flex: 1; color: #aaa; font-size: 14px; }
+.field input { width: 100px; background: #0a0a14; border: 1px solid #2a2a4a; border-radius: 4px; color: #fff; padding: 4px 8px; font-size: 14px; font-family: monospace; text-align: right; }
+.field input:focus { outline: none; border-color: #4dd9ff; }
+.field .unit { color: #555; font-size: 12px; width: 40px; }
+.buttons { display: flex; gap: 12px; margin-top: 20px; }
+.btn { padding: 10px 24px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: bold; }
+.btn-save { background: #1a6b1a; color: #fff; }
+.btn-save:hover { background: #228b22; }
+.btn-reset { background: #4a1a1a; color: #fff; }
+.btn-reset:hover { background: #6b2222; }
+.status { margin-top: 12px; font-size: 13px; color: #4dff7c; min-height: 20px; }
+.status.error { color: #ff4d4d; }
+</style>
+</head>
+<body>
+<h1>Physics Tuning</h1>
+<p class="subtitle">Change values and click Save. Changes apply to new launches immediately.</p>
+<div class="nav"><a href="./">Dashboard</a><a href="logs">Logs</a><a href="tuning">Tuning</a></div>
+<div id="sections"></div>
+<div class="buttons">
+  <button class="btn btn-save" onclick="save()">Save Changes</button>
+  <button class="btn btn-reset" onclick="resetDefaults()">Reset Defaults</button>
+</div>
+<div class="status" id="status"></div>
+<script>
+const SECTIONS = {
+  "Ball Physics": [
+    ["ball_mass", "Mass", "kg"],
+    ["ball_friction", "Friction", ""],
+    ["ball_bounce", "Bounce", ""],
+    ["ball_linear_damp", "Linear Damping", ""],
+    ["ball_angular_damp", "Angular Damping", ""],
+    ["ball_max_power", "Max Launch Power", ""],
+    ["ball_min_power", "Min Launch Power", ""],
+    ["ball_radius", "Radius", "m"],
+    ["ball_slow_threshold", "Slow Threshold", "m/s"],
+    ["ball_extra_damp_factor", "Extra Damp Factor", "x"],
+    ["ball_stop_threshold", "Stop Threshold", "m/s"],
+    ["ball_moving_threshold", "Moving Threshold", "m/s"],
+  ],
+  "Powerups": [
+    ["powerup_pickup_radius", "Pickup Radius", "m"],
+    ["powerup_max_on_table", "Max On Table", ""],
+    ["powerup_spawn_min_delay", "Spawn Min Delay", "s"],
+    ["powerup_spawn_max_delay", "Spawn Max Delay", "s"],
+    ["speed_boost_multiplier", "Speed Boost", "x"],
+    ["bomb_force", "Bomb Force", ""],
+    ["bomb_radius", "Bomb Radius", "m"],
+    ["freeze_duration", "Freeze Duration", "s"],
+  ],
+  "Bot AI": [
+    ["bot_min_delay", "Min Delay", "s"],
+    ["bot_max_delay", "Max Delay", "s"],
+    ["bot_power_min_pct", "Power Min %", ""],
+    ["bot_power_max_pct", "Power Max %", ""],
+    ["bot_scatter_angle", "Scatter Angle", "rad"],
+    ["bot_accuracy_easy", "Accuracy Easy (close)", "x"],
+    ["bot_accuracy_hard", "Accuracy Hard (far)", "x"],
+    ["bot_distance_factor", "Distance Factor", "rad/m"],
+    ["bot_power_variance", "Power Variance", ""],
+    ["bot_min_power_for_distance", "Min Power for Dist", ""],
+  ],
+  "Game Timing": [
+    ["launch_cooldown", "Launch Cooldown", "s"],
+    ["disconnect_grace_period", "Disconnect Grace", "s"],
+  ],
+  "Spawn Weights": [
+    ["powerup_weight_speed_boost", ">> Speed Boost", ""],
+    ["powerup_weight_bomb",        "(*) Bomb",        ""],
+    ["powerup_weight_freeze",      "[*] Freeze",      ""],
+    ["powerup_weight_anchor_trap", "{#} Anchor Trap", ""],
+    ["powerup_weight_warp",        "~> Warp",         ""],
+    ["powerup_weight_swap",        "<> Swap",         ""],
+  ],
+};
+
+let currentValues = {};
+
+function buildUI(data) {
+  currentValues = data;
+  let html = "";
+  for (let [title, fields] of Object.entries(SECTIONS)) {
+    html += '<div class="section"><h2>' + title + '</h2>';
+    for (let [key, label, unit] of fields) {
+      let val = data[key] !== undefined ? data[key] : "";
+      let step = Number.isInteger(val) ? "1" : "0.01";
+      html += '<div class="field"><label>' + label + '</label><input type="number" step="' + step + '" id="f_' + key + '" value="' + val + '"><span class="unit">' + unit + '</span></div>';
+    }
+    html += '</div>';
+  }
+  document.getElementById("sections").innerHTML = html;
+}
+
+async function load() {
+  try {
+    let r = await fetch("api/tuning");
+    let d = await r.json();
+    buildUI(d);
+  } catch(e) {
+    showStatus("Failed to load: " + e.message, true);
+  }
+}
+
+async function save() {
+  let data = {};
+  for (let fields of Object.values(SECTIONS)) {
+    for (let [key] of fields) {
+      let el = document.getElementById("f_" + key);
+      if (el) data[key] = parseFloat(el.value);
+    }
+  }
+  try {
+    let r = await fetch("api/tuning", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data) });
+    let d = await r.json();
+    if (d.error) { showStatus("Error: " + d.error, true); return; }
+    buildUI(d);
+    showStatus("Saved successfully!");
+  } catch(e) {
+    showStatus("Save failed: " + e.message, true);
+  }
+}
+
+async function resetDefaults() {
+  if (!confirm("Reset all values to defaults?")) return;
+  try {
+    let r = await fetch("api/tuning/reset", { method: "POST" });
+    let d = await r.json();
+    buildUI(d);
+    showStatus("Reset to defaults!");
+  } catch(e) {
+    showStatus("Reset failed: " + e.message, true);
+  }
+}
+
+function showStatus(msg, isError) {
+  let el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = "status" + (isError ? " error" : "");
+  setTimeout(() => el.textContent = "", 3000);
+}
+
+load();
+</script>
+</body>
+</html>

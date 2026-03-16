@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base href="/dp/admin/">
+<title>Deadly Pool - Room Logs</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a14; color: #ccc; font-family: monospace; padding: 24px; }
+h1 { color: #ffda33; font-size: 24px; margin-bottom: 4px; }
+.subtitle { color: #666; font-size: 13px; margin-bottom: 16px; }
+.nav { margin-bottom: 20px; }
+.nav a { color: #4dd9ff; text-decoration: none; margin-right: 16px; }
+.nav a:hover { text-decoration: underline; }
+.room-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.tab { padding: 6px 16px; border-radius: 6px; cursor: pointer; border: 1px solid #2a2a4a; background: #14142a; color: #aaa; font-family: monospace; font-size: 14px; }
+.tab:hover { border-color: #4dd9ff; color: #fff; }
+.tab.active { background: #1a2a4a; border-color: #4dd9ff; color: #4dd9ff; }
+.tab.archived { opacity: 0.5; }
+.tab.archived:hover { opacity: 0.8; }
+.section-label { color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin: 12px 0 6px; }
+.section-label:first-child { margin-top: 0; }
+.log-container { background: #0d0d1a; border: 1px solid #1a1a2a; border-radius: 8px; padding: 16px; max-height: 70vh; overflow-y: auto; }
+.log-line { padding: 2px 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.log-line .ts { color: #555; }
+.log-line .launch { color: #4dff7c; }
+.log-line .state { color: #666; }
+.log-line .pocket { color: #ff6b4d; }
+.log-line .elim { color: #ff4d4d; }
+.log-line .game { color: #ffda33; }
+.log-line .powerup { color: #bf6dff; }
+.log-line .effect { color: #ff9f4d; }
+.log-line .perf { color: #4dd9ff; }
+.log-line .error { color: #ff4d4d; font-weight: bold; }
+.log-line .warning { color: #ffda33; }
+.log-line .script-error { color: #ff8c4d; }
+.empty { color: #444; font-style: italic; padding: 20px; text-align: center; }
+.controls { margin-bottom: 12px; display: flex; gap: 12px; align-items: center; }
+.controls label { color: #888; font-size: 13px; }
+.controls input[type=checkbox] { margin-right: 4px; }
+.auto-label { color: #4dff7c; font-size: 12px; }
+.page-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.page-tab { padding: 6px 18px; border-radius: 6px; cursor: pointer; border: 1px solid #2a2a4a; background: #14142a; color: #aaa; font-family: monospace; font-size: 14px; }
+.page-tab:hover { border-color: #4dd9ff; color: #fff; }
+.page-tab.active { background: #1a2a4a; border-color: #4dd9ff; color: #4dd9ff; }
+#syslog-controls { margin-bottom: 12px; display: flex; gap: 12px; align-items: center; }
+#syslog-filter { background:#0a0a14;border:1px solid #2a2a4a;border-radius:4px;color:#fff;padding:4px 8px;font-size:13px;width:240px; }
+</style>
+</head>
+<body>
+<h1>Room Logs</h1>
+<p class="subtitle">Physics debug and game event logs per room</p>
+<div class="nav"><a href="./">Dashboard</a><a href="logs">Logs</a><a href="tuning">Tuning</a></div>
+<div class="page-tabs">
+  <button class="page-tab active" onclick="switchPage('rooms')">Room Logs</button>
+  <button class="page-tab" onclick="switchPage('syslog')">System Log</button>
+</div>
+
+<div id="page-rooms">
+  <div id="tabs"></div>
+  <div class="controls">
+    <label><input type="checkbox" id="auto" checked> Auto-refresh (2s)</label>
+    <label><input type="checkbox" id="showState"> Show STATE lines</label>
+    <label><input type="checkbox" id="scrollLock" checked> Auto-scroll</label>
+    <input type="text" id="filterText" placeholder="Filter logs..." style="background:#0a0a14;border:1px solid #2a2a4a;border-radius:4px;color:#fff;padding:4px 8px;font-size:13px;width:200px;">
+  </div>
+  <div class="log-container" id="logs"><div class="empty">Select a room</div></div>
+</div>
+
+<div id="page-syslog" style="display:none">
+  <div id="syslog-controls">
+    <label><input type="checkbox" id="sysAuto" checked> Auto-refresh (5s)</label>
+    <label><input type="checkbox" id="sysErrOnly"> Errors &amp; warnings only</label>
+    <label><input type="checkbox" id="sysSroll" checked> Auto-scroll</label>
+    <input type="text" id="syslog-filter" placeholder="Filter...">
+  </div>
+  <div class="log-container" id="syslog-container"><div class="empty">Loading...</div></div>
+</div>
+<script>
+// ── Room Logs ────────────────────────────────────────────────────────────────
+let currentRoom = "";
+let autoRefresh = true;
+let showState = false;
+let autoScroll = true;
+let filterText = "";
+
+document.getElementById("auto").onchange = e => autoRefresh = e.target.checked;
+document.getElementById("showState").onchange = e => { showState = e.target.checked; if(currentRoom) loadLogs(currentRoom); };
+document.getElementById("scrollLock").onchange = e => autoScroll = e.target.checked;
+document.getElementById("filterText").oninput = e => { filterText = e.target.value.toLowerCase(); if(currentRoom) loadLogs(currentRoom); };
+
+async function loadRooms() {
+  try {
+    let r = await fetch("api/logs");
+    let d = await r.json();
+    let el = document.getElementById("tabs");
+    if (d.rooms.length === 0) {
+      el.innerHTML = '<span class="empty">No rooms with logs</span>';
+      return;
+    }
+    let active = d.rooms.filter(r => !r.archived);
+    let archived = d.rooms.filter(r => r.archived);
+    let html = "";
+    if (active.length > 0) {
+      html += '<div class="section-label">Active Rooms</div><div class="room-tabs">';
+      html += active.map(r =>
+        '<button class="tab'+(r.code===currentRoom?" active":"")+'" onclick="selectRoom(\''+r.code+'\')">'+r.code+' ('+r.line_count+')</button>'
+      ).join("");
+      html += '</div>';
+    }
+    if (archived.length > 0) {
+      html += '<div class="section-label">Archived Rooms</div><div class="room-tabs">';
+      html += archived.map(r =>
+        '<button class="tab archived'+(r.code===currentRoom?" active":"")+'" onclick="selectRoom(\''+r.code+'\')">'+r.code+' ('+r.line_count+')</button>'
+      ).join("");
+      html += '</div>';
+    }
+    if (active.length === 0 && archived.length === 0) {
+      html = '<span class="empty">No rooms with logs</span>';
+    }
+    el.innerHTML = html;
+  } catch(e) {}
+}
+
+function selectRoom(code) {
+  currentRoom = code;
+  loadRooms();
+  loadLogs(code);
+}
+
+function classify(line) {
+  if (line.includes("LAUNCH")) return "launch";
+  if (line.includes("STATE")) return "state";
+  if (line.includes("POCKET")) return "pocket";
+  if (line.includes("ELIMINATED")) return "elim";
+  if (line.includes("GAME_START") || line.includes("GAME_OVER")) return "game";
+  if (line.includes("POWERUP")) return "powerup";
+  if (line.includes("SHOCKWAVE") || line.includes("ANCHOR")) return "effect";
+  if (line.includes("CLIENT_PERF")) return "perf";
+  return "";
+}
+
+async function loadLogs(code) {
+  try {
+    let r = await fetch("api/logs?room=" + code);
+    let d = await r.json();
+    let el = document.getElementById("logs");
+    if (d.lines.length === 0) {
+      el.innerHTML = '<div class="empty">No logs yet</div>';
+      return;
+    }
+    let filtered = d.lines;
+    if (!showState) filtered = filtered.filter(l => !l.includes("STATE"));
+    if (filterText.length > 0) filtered = filtered.filter(l => l.toLowerCase().includes(filterText));
+    el.innerHTML = filtered.map(l => {
+      let cls = classify(l);
+      let parts = l.match(/^(\[[^\]]+\])(.*)$/);
+      if (parts) return '<div class="log-line"><span class="ts">'+esc(parts[1])+'</span><span class="'+cls+'">'+esc(parts[2])+'</span></div>';
+      return '<div class="log-line">'+esc(l)+'</div>';
+    }).join("");
+    if (autoScroll) el.scrollTop = el.scrollHeight;
+  } catch(e) {}
+}
+
+// ── System Log ───────────────────────────────────────────────────────────────
+let sysAutoRefresh = true;
+let sysErrOnly = false;
+let sysSroll = true;
+let sysFilter = "";
+
+document.getElementById("sysAuto").onchange = e => sysAutoRefresh = e.target.checked;
+document.getElementById("sysErrOnly").onchange = e => { sysErrOnly = e.target.checked; loadSysLog(); };
+document.getElementById("sysSroll").onchange = e => sysSroll = e.target.checked;
+document.getElementById("syslog-filter").oninput = e => { sysFilter = e.target.value.toLowerCase(); loadSysLog(); };
+
+function classifySys(line) {
+  if (/^(ERROR:|SCRIPT ERROR:|USER ERROR:)/i.test(line) || line.startsWith("E ")) return "error";
+  if (/^(WARNING:|SCRIPT WARNING:|USER WARNING:)/i.test(line) || line.startsWith("W ")) return "warning";
+  if (line.startsWith("   ") && (line.includes(".gd:") || line.includes("@ "))) return "script-error";
+  return "";
+}
+
+async function loadSysLog() {
+  try {
+    let r = await fetch("api/system-log");
+    let d = await r.json();
+    let el = document.getElementById("syslog-container");
+    if (d.error) {
+      el.innerHTML = '<div class="empty">'+esc(d.error)+' ('+esc(d.path)+')</div>';
+      return;
+    }
+    let lines = d.lines;
+    if (sysErrOnly) lines = lines.filter(l => { let c = classifySys(l); return c === "error" || c === "warning" || c === "script-error"; });
+    if (sysFilter) lines = lines.filter(l => l.toLowerCase().includes(sysFilter));
+    if (lines.length === 0) {
+      el.innerHTML = '<div class="empty">No matching lines</div>';
+      return;
+    }
+    el.innerHTML = lines.map(l => {
+      let cls = classifySys(l);
+      return '<div class="log-line"><span class="'+cls+'">'+esc(l)+'</span></div>';
+    }).join("");
+    if (sysSroll) el.scrollTop = el.scrollHeight;
+  } catch(e) {}
+}
+
+// ── Page switching ───────────────────────────────────────────────────────────
+let currentPage = "rooms";
+function switchPage(page) {
+  currentPage = page;
+  document.getElementById("page-rooms").style.display = page === "rooms" ? "" : "none";
+  document.getElementById("page-syslog").style.display = page === "syslog" ? "" : "none";
+  document.querySelectorAll(".page-tab").forEach((t, i) => {
+    t.classList.toggle("active", (i === 0 && page === "rooms") || (i === 1 && page === "syslog"));
+  });
+  if (page === "syslog") loadSysLog();
+}
+
+function esc(s) { let d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+loadRooms();
+setInterval(() => {
+  if (currentPage === "rooms" && autoRefresh) { loadRooms(); if(currentRoom) loadLogs(currentRoom); }
+  if (currentPage === "syslog" && sysAutoRefresh) loadSysLog();
+}, 2000);
+</script>
+</body>
+</html>

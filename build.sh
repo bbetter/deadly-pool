@@ -8,11 +8,15 @@ set -e
 #   web          - Export web client (release)
 #   linux        - Export Linux native client (release)
 #   win          - Export Windows native client (release)
+#   mac          - Export macOS universal client (release)
+#   android      - Export Android APK (release, debug-signed)
 #   server-debug - Export headless server (debug), build deadly-pool-debug Docker image
 #   web-debug    - Export web client (debug), deploys to web-debug/ dir
 #   linux-debug  - Export Linux native client (debug)
 #   win-debug    - Export Windows native client (debug)
-#   all          - All release targets (server web linux win)
+#   mac-debug    - Export macOS universal client (debug)
+#   android-debug - Export Android APK (debug-signed, debug build)
+#   all          - All release targets (server web linux win mac android)
 #
 # Examples:
 #   ./build.sh server web              # build server + web (release)
@@ -36,10 +40,14 @@ BUILD_SERVER=false
 BUILD_WEB=false
 BUILD_LINUX=false
 BUILD_WIN=false
+BUILD_MAC=false
+BUILD_ANDROID=false
 BUILD_SERVER_DEBUG=false
 BUILD_WEB_DEBUG=false
 BUILD_LINUX_DEBUG=false
 BUILD_WIN_DEBUG=false
+BUILD_MAC_DEBUG=false
+BUILD_ANDROID_DEBUG=false
 HAS_TARGETS=false
 
 for arg in "$@"; do
@@ -49,11 +57,15 @@ for arg in "$@"; do
         web)           BUILD_WEB=true; HAS_TARGETS=true ;;
         linux)         BUILD_LINUX=true; HAS_TARGETS=true ;;
         win)           BUILD_WIN=true; HAS_TARGETS=true ;;
+        mac)           BUILD_MAC=true; HAS_TARGETS=true ;;
+        android)       BUILD_ANDROID=true; HAS_TARGETS=true ;;
         server-debug)  BUILD_SERVER_DEBUG=true; HAS_TARGETS=true ;;
         web-debug)     BUILD_WEB_DEBUG=true; HAS_TARGETS=true ;;
         linux-debug)   BUILD_LINUX_DEBUG=true; HAS_TARGETS=true ;;
         win-debug)     BUILD_WIN_DEBUG=true; HAS_TARGETS=true ;;
-        all)           BUILD_SERVER=true; BUILD_WEB=true; BUILD_LINUX=true; BUILD_WIN=true; HAS_TARGETS=true ;;
+        mac-debug)     BUILD_MAC_DEBUG=true; HAS_TARGETS=true ;;
+        android-debug) BUILD_ANDROID_DEBUG=true; HAS_TARGETS=true ;;
+        all)           BUILD_SERVER=true; BUILD_WEB=true; BUILD_LINUX=true; BUILD_WIN=true; BUILD_MAC=true; BUILD_ANDROID=true; HAS_TARGETS=true ;;
         *)             echo "Unknown arg: $arg"; exit 1 ;;
     esac
 done
@@ -61,8 +73,8 @@ done
 if [ "$HAS_TARGETS" = false ]; then
     echo "Usage: ./build.sh <targets...> [--deploy]"
     echo ""
-    echo "Release targets: server web linux win all"
-    echo "Debug targets:   server-debug web-debug linux-debug win-debug"
+    echo "Release targets: server web linux win mac android all"
+    echo "Debug targets:   server-debug web-debug linux-debug win-debug mac-debug android-debug"
     echo ""
     echo "Examples:"
     echo "  ./build.sh server web --deploy"
@@ -85,10 +97,14 @@ $BUILD_SERVER       && TARGETS="${TARGETS} server"
 $BUILD_WEB          && TARGETS="${TARGETS} web"
 $BUILD_LINUX        && TARGETS="${TARGETS} linux"
 $BUILD_WIN          && TARGETS="${TARGETS} win"
+$BUILD_MAC          && TARGETS="${TARGETS} mac"
+$BUILD_ANDROID      && TARGETS="${TARGETS} android"
 $BUILD_SERVER_DEBUG && TARGETS="${TARGETS} server-debug"
 $BUILD_WEB_DEBUG    && TARGETS="${TARGETS} web-debug"
 $BUILD_LINUX_DEBUG  && TARGETS="${TARGETS} linux-debug"
 $BUILD_WIN_DEBUG    && TARGETS="${TARGETS} win-debug"
+$BUILD_MAC_DEBUG    && TARGETS="${TARGETS} mac-debug"
+$BUILD_ANDROID_DEBUG && TARGETS="${TARGETS} android-debug"
 echo "Targets:${TARGETS}"
 $DO_DEPLOY && echo "Deploy: yes"
 echo ""
@@ -98,23 +114,39 @@ echo "Running tests..."
 ./run_tests.sh
 echo ""
 
-# 3. Stamp version and export
+# 3. Lint check
+echo "Checking scripts..."
+GODOT_BIN="${GODOT:-$HOME/Завантажене/Godot_v4.6-stable_linux.x86_64}"
+LINT_OUT=$("$GODOT_BIN" --headless --path . --check-only --quit 2>&1 || true)
+if echo "$LINT_OUT" | grep -qi "script error\|parse error"; then
+    echo "$LINT_OUT" | grep -i "script error\|parse error"
+    echo "Script errors found — fix before building."
+    exit 1
+fi
+echo "Scripts OK."
+echo ""
+
+# 4. Stamp version and export
 echo "Exporting..."
 
 # Release exports — stamp clean version
 sed -i "s/^const VERSION := \".*\"/const VERSION := \"${VER}\"/" scripts/version.gd
 $BUILD_LINUX   && ./export-linux.sh
 $BUILD_WIN     && ./export-windows.sh
+$BUILD_MAC     && ./export-macos.sh
+$BUILD_ANDROID && ./export-android.sh
 $BUILD_SERVER  && ./export-server.sh
 $BUILD_WEB     && ./export-web.sh
 
 # Debug exports — stamp version with (DEBUG) suffix so clients can identify the build
-if $BUILD_LINUX_DEBUG || $BUILD_WIN_DEBUG || $BUILD_SERVER_DEBUG || $BUILD_WEB_DEBUG; then
+if $BUILD_LINUX_DEBUG || $BUILD_WIN_DEBUG || $BUILD_MAC_DEBUG || $BUILD_ANDROID_DEBUG || $BUILD_SERVER_DEBUG || $BUILD_WEB_DEBUG; then
     sed -i "s/^const VERSION := \".*\"/const VERSION := \"${VER} (DEBUG)\"/" scripts/version.gd
-    $BUILD_LINUX_DEBUG  && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-debug.x86_64"        ./export-linux.sh
-    $BUILD_WIN_DEBUG    && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-debug.exe"            ./export-windows.sh
-    $BUILD_SERVER_DEBUG && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-server-debug.x86_64" ./export-server.sh
-    $BUILD_WEB_DEBUG    && DEBUG_BUILD=true EXPORT_DIR="export/web-debug"                        ./export-web.sh
+    $BUILD_LINUX_DEBUG   && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-debug.x86_64"        ./export-linux.sh
+    $BUILD_WIN_DEBUG     && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-debug.exe"            ./export-windows.sh
+    $BUILD_MAC_DEBUG     && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-debug.zip"            ./export-macos.sh
+    $BUILD_ANDROID_DEBUG && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-debug.apk"           ./export-android.sh
+    $BUILD_SERVER_DEBUG  && DEBUG_BUILD=true EXPORT_OUT="export/deadly-pool-server-debug.x86_64" ./export-server.sh
+    $BUILD_WEB_DEBUG     && DEBUG_BUILD=true EXPORT_DIR="export/web-debug"                        ./export-web.sh
     # Restore clean version stamp so the working tree isn't left dirty
     sed -i "s/^const VERSION := \".*\"/const VERSION := \"${VER}\"/" scripts/version.gd
 fi
@@ -131,6 +163,14 @@ if $BUILD_WIN; then
     cd export && zip -j "../dist/deadly-pool-${VER}-windows.zip" deadly-pool.exe && cd ..
     echo "  dist/deadly-pool-${VER}-windows.zip ($(du -h "dist/deadly-pool-${VER}-windows.zip" | cut -f1))"
 fi
+if $BUILD_MAC; then
+    cp "export/deadly-pool.zip" "dist/deadly-pool-${VER}-macos.zip"
+    echo "  dist/deadly-pool-${VER}-macos.zip   ($(du -h "dist/deadly-pool-${VER}-macos.zip" | cut -f1))"
+fi
+if $BUILD_ANDROID; then
+    cp "export/deadly-pool.apk" "dist/deadly-pool-${VER}-android.apk"
+    echo "  dist/deadly-pool-${VER}-android.apk ($(du -h "dist/deadly-pool-${VER}-android.apk" | cut -f1))"
+fi
 if $BUILD_LINUX_DEBUG; then
     rm -f "dist/deadly-pool-${VER}-linux-debug.zip"
     cd export && zip -j "../dist/deadly-pool-${VER}-linux-debug.zip" deadly-pool-debug.x86_64 deadly-pool.sh && cd ..
@@ -141,11 +181,19 @@ if $BUILD_WIN_DEBUG; then
     cd export && zip -j "../dist/deadly-pool-${VER}-windows-debug.zip" deadly-pool-debug.exe && cd ..
     echo "  dist/deadly-pool-${VER}-windows-debug.zip ($(du -h "dist/deadly-pool-${VER}-windows-debug.zip" | cut -f1))"
 fi
+if $BUILD_MAC_DEBUG; then
+    cp "export/deadly-pool-debug.zip" "dist/deadly-pool-${VER}-macos-debug.zip"
+    echo "  dist/deadly-pool-${VER}-macos-debug.zip   ($(du -h "dist/deadly-pool-${VER}-macos-debug.zip" | cut -f1))"
+fi
+if $BUILD_ANDROID_DEBUG; then
+    cp "export/deadly-pool-debug.apk" "dist/deadly-pool-${VER}-android-debug.apk"
+    echo "  dist/deadly-pool-${VER}-android-debug.apk ($(du -h "dist/deadly-pool-${VER}-android-debug.apk" | cut -f1))"
+fi
 $BUILD_WEB       && echo "  export/web/                         ($(du -sh export/web/ | cut -f1))"
 $BUILD_WEB_DEBUG && echo "  export/web-debug/                   ($(du -sh export/web-debug/ | cut -f1))"
 
 # 5. Generate latest.json (only if building release native clients)
-if $BUILD_LINUX || $BUILD_WIN; then
+if $BUILD_LINUX || $BUILD_WIN || $BUILD_MAC || $BUILD_ANDROID; then
     cat > dist/latest.json <<EOF
 {
   "version": "${VER}",
@@ -153,6 +201,8 @@ if $BUILD_LINUX || $BUILD_WIN; then
   "downloads": {
     "linux": "deadly-pool-${VER}-linux.zip",
     "windows": "deadly-pool-${VER}-windows.zip",
+    "macos": "deadly-pool-${VER}-macos.zip",
+    "android": "deadly-pool-${VER}-android.apk",
     "web": "https://games.900dfe11a-media.pp.ua/dp"
   }
 }
@@ -171,26 +221,30 @@ echo ""
 echo "=== Deploying to ${REMOTE_HOST} ==="
 
 # Release native builds
-if $BUILD_LINUX || $BUILD_WIN; then
+if $BUILD_LINUX || $BUILD_WIN || $BUILD_MAC || $BUILD_ANDROID; then
     echo "Uploading native builds..."
     ssh "$REMOTE_HOST" "mkdir -p ${REMOTE_BUILDS_DIR}"
     FILES=""
-    $BUILD_LINUX && FILES="$FILES dist/deadly-pool-${VER}-linux.zip"
-    $BUILD_WIN   && FILES="$FILES dist/deadly-pool-${VER}-windows.zip"
+    $BUILD_LINUX    && FILES="$FILES dist/deadly-pool-${VER}-linux.zip"
+    $BUILD_WIN      && FILES="$FILES dist/deadly-pool-${VER}-windows.zip"
+    $BUILD_MAC      && FILES="$FILES dist/deadly-pool-${VER}-macos.zip"
+    $BUILD_ANDROID  && FILES="$FILES dist/deadly-pool-${VER}-android.apk"
     scp $FILES dist/latest.json "$REMOTE_HOST:${REMOTE_BUILDS_DIR}/"
 
     # Keep only 3 most recent versions
     echo "Cleaning old builds..."
-    ssh "$REMOTE_HOST" 'cd '"${REMOTE_BUILDS_DIR}"' && ls -t *.zip 2>/dev/null | grep linux | tail -n +4 | while read f; do ver=$(echo "$f" | sed "s/deadly-pool-\(.*\)-linux.zip/\1/"); rm -f "deadly-pool-${ver}-linux.zip" "deadly-pool-${ver}-windows.zip"; echo "  removed v${ver}"; done'
+    ssh "$REMOTE_HOST" 'cd '"${REMOTE_BUILDS_DIR}"' && ls -t *.zip 2>/dev/null | grep linux | tail -n +4 | while read f; do ver=$(echo "$f" | sed "s/deadly-pool-\(.*\)-linux.zip/\1/"); rm -f "deadly-pool-${ver}-linux.zip" "deadly-pool-${ver}-windows.zip" "deadly-pool-${ver}-macos.zip" "deadly-pool-${ver}-android.apk"; echo "  removed v${ver}"; done'
 fi
 
 # Debug native builds (upload only, no version pruning)
-if $BUILD_LINUX_DEBUG || $BUILD_WIN_DEBUG; then
+if $BUILD_LINUX_DEBUG || $BUILD_WIN_DEBUG || $BUILD_MAC_DEBUG || $BUILD_ANDROID_DEBUG; then
     echo "Uploading debug native builds..."
     ssh "$REMOTE_HOST" "mkdir -p ${REMOTE_BUILDS_DIR}"
     FILES=""
-    $BUILD_LINUX_DEBUG && FILES="$FILES dist/deadly-pool-${VER}-linux-debug.zip"
-    $BUILD_WIN_DEBUG   && FILES="$FILES dist/deadly-pool-${VER}-windows-debug.zip"
+    $BUILD_LINUX_DEBUG   && FILES="$FILES dist/deadly-pool-${VER}-linux-debug.zip"
+    $BUILD_WIN_DEBUG     && FILES="$FILES dist/deadly-pool-${VER}-windows-debug.zip"
+    $BUILD_MAC_DEBUG     && FILES="$FILES dist/deadly-pool-${VER}-macos-debug.zip"
+    $BUILD_ANDROID_DEBUG && FILES="$FILES dist/deadly-pool-${VER}-android-debug.apk"
     scp $FILES "$REMOTE_HOST:${REMOTE_BUILDS_DIR}/"
 fi
 
@@ -310,4 +364,4 @@ $BUILD_SERVER_DEBUG && echo "  Server (debug):    restarted with v${VER} (DEBUG)
 $BUILD_SERVER       && echo "  Admin (dashboard): restarted  →  https://games.900dfe11a-media.pp.ua/dp/admin"
 $BUILD_WEB          && echo "  Web (release):     https://games.900dfe11a-media.pp.ua/dp"
 $BUILD_WEB_DEBUG    && echo "  Web (debug):       https://games.900dfe11a-media.pp.ua/dp  [replaces release]"
-($BUILD_LINUX || $BUILD_WIN) && echo "  Builds:            https://games.900dfe11a-media.pp.ua/downloads/dp"
+($BUILD_LINUX || $BUILD_WIN || $BUILD_MAC || $BUILD_ANDROID) && echo "  Builds:            https://games.900dfe11a-media.pp.ua/downloads/dp"
